@@ -1,0 +1,652 @@
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
+"""
+scalar JSON
+
+scalar BigInt
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Meta {
+  status: JSON
+}
+
+type Query {
+  user(id: String!): User
+  users(where: UserFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): UserPage!
+  ticket(id: String!): Ticket
+  tickets(where: TicketFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): TicketPage!
+  pool(id: String!): Pool
+  pools(where: PoolFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): PoolPage!
+  draw(id: String!): Draw
+  draws(where: DrawFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): DrawPage!
+  battle(id: String!): Battle
+  battles(where: BattleFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): BattlePage!
+  treasury(id: String!): Treasury
+  treasurys(where: TreasuryFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): TreasuryPage!
+  proposal(id: String!): Proposal
+  proposals(where: ProposalFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): ProposalPage!
+  vote(id: String!): Vote
+  votes(where: VoteFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): VotePage!
+  listing(id: String!): Listing
+  listings(where: ListingFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): ListingPage!
+  _meta: Meta
+}
+
+type User {
+  id: String!
+  totalDeposited: BigInt!
+  totalWinnings: BigInt!
+  stakedAmount: BigInt!
+  tickets(where: TicketFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): TicketPage
+}
+
+type TicketPage {
+  items: [Ticket!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type Ticket {
+  id: String!
+  ownerId: String!
+  mode: Int!
+  assets: BigInt!
+  mintTime: BigInt!
+  isDead: Boolean!
+  isWinner: Boolean!
+  prize: BigInt!
+  multiplier: Int!
+  owner: User
+}
+
+input TicketFilter {
+  AND: [TicketFilter]
+  OR: [TicketFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  ownerId: String
+  ownerId_not: String
+  ownerId_in: [String]
+  ownerId_not_in: [String]
+  ownerId_contains: String
+  ownerId_not_contains: String
+  ownerId_starts_with: String
+  ownerId_ends_with: String
+  ownerId_not_starts_with: String
+  ownerId_not_ends_with: String
+  mode: Int
+  mode_not: Int
+  mode_in: [Int]
+  mode_not_in: [Int]
+  mode_gt: Int
+  mode_lt: Int
+  mode_gte: Int
+  mode_lte: Int
+  assets: BigInt
+  assets_not: BigInt
+  assets_in: [BigInt]
+  assets_not_in: [BigInt]
+  assets_gt: BigInt
+  assets_lt: BigInt
+  assets_gte: BigInt
+  assets_lte: BigInt
+  mintTime: BigInt
+  mintTime_not: BigInt
+  mintTime_in: [BigInt]
+  mintTime_not_in: [BigInt]
+  mintTime_gt: BigInt
+  mintTime_lt: BigInt
+  mintTime_gte: BigInt
+  mintTime_lte: BigInt
+  isDead: Boolean
+  isDead_not: Boolean
+  isDead_in: [Boolean]
+  isDead_not_in: [Boolean]
+  isWinner: Boolean
+  isWinner_not: Boolean
+  isWinner_in: [Boolean]
+  isWinner_not_in: [Boolean]
+  prize: BigInt
+  prize_not: BigInt
+  prize_in: [BigInt]
+  prize_not_in: [BigInt]
+  prize_gt: BigInt
+  prize_lt: BigInt
+  prize_gte: BigInt
+  prize_lte: BigInt
+  multiplier: Int
+  multiplier_not: Int
+  multiplier_in: [Int]
+  multiplier_not_in: [Int]
+  multiplier_gt: Int
+  multiplier_lt: Int
+  multiplier_gte: Int
+  multiplier_lte: Int
+}
+
+type UserPage {
+  items: [User!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input UserFilter {
+  AND: [UserFilter]
+  OR: [UserFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  totalDeposited: BigInt
+  totalDeposited_not: BigInt
+  totalDeposited_in: [BigInt]
+  totalDeposited_not_in: [BigInt]
+  totalDeposited_gt: BigInt
+  totalDeposited_lt: BigInt
+  totalDeposited_gte: BigInt
+  totalDeposited_lte: BigInt
+  totalWinnings: BigInt
+  totalWinnings_not: BigInt
+  totalWinnings_in: [BigInt]
+  totalWinnings_not_in: [BigInt]
+  totalWinnings_gt: BigInt
+  totalWinnings_lt: BigInt
+  totalWinnings_gte: BigInt
+  totalWinnings_lte: BigInt
+  stakedAmount: BigInt
+  stakedAmount_not: BigInt
+  stakedAmount_in: [BigInt]
+  stakedAmount_not_in: [BigInt]
+  stakedAmount_gt: BigInt
+  stakedAmount_lt: BigInt
+  stakedAmount_gte: BigInt
+  stakedAmount_lte: BigInt
+}
+
+type Pool {
+  id: String!
+  totalAssets: BigInt!
+  activeTicketsCount: Int!
+}
+
+type PoolPage {
+  items: [Pool!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input PoolFilter {
+  AND: [PoolFilter]
+  OR: [PoolFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  totalAssets: BigInt
+  totalAssets_not: BigInt
+  totalAssets_in: [BigInt]
+  totalAssets_not_in: [BigInt]
+  totalAssets_gt: BigInt
+  totalAssets_lt: BigInt
+  totalAssets_gte: BigInt
+  totalAssets_lte: BigInt
+  activeTicketsCount: Int
+  activeTicketsCount_not: Int
+  activeTicketsCount_in: [Int]
+  activeTicketsCount_not_in: [Int]
+  activeTicketsCount_gt: Int
+  activeTicketsCount_lt: Int
+  activeTicketsCount_gte: Int
+  activeTicketsCount_lte: Int
+}
+
+type Draw {
+  id: String!
+  timestamp: BigInt!
+  winnerTokenId: String
+  prize: BigInt!
+  winnerToken: Ticket
+}
+
+type DrawPage {
+  items: [Draw!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input DrawFilter {
+  AND: [DrawFilter]
+  OR: [DrawFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  timestamp: BigInt
+  timestamp_not: BigInt
+  timestamp_in: [BigInt]
+  timestamp_not_in: [BigInt]
+  timestamp_gt: BigInt
+  timestamp_lt: BigInt
+  timestamp_gte: BigInt
+  timestamp_lte: BigInt
+  winnerTokenId: String
+  winnerTokenId_not: String
+  winnerTokenId_in: [String]
+  winnerTokenId_not_in: [String]
+  winnerTokenId_contains: String
+  winnerTokenId_not_contains: String
+  winnerTokenId_starts_with: String
+  winnerTokenId_ends_with: String
+  winnerTokenId_not_starts_with: String
+  winnerTokenId_not_ends_with: String
+  prize: BigInt
+  prize_not: BigInt
+  prize_in: [BigInt]
+  prize_not_in: [BigInt]
+  prize_gt: BigInt
+  prize_lt: BigInt
+  prize_gte: BigInt
+  prize_lte: BigInt
+}
+
+type Battle {
+  id: String!
+  startTime: BigInt!
+  winnerTokenId: String
+  prize: BigInt!
+  winnerToken: Ticket
+}
+
+type BattlePage {
+  items: [Battle!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input BattleFilter {
+  AND: [BattleFilter]
+  OR: [BattleFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  startTime: BigInt
+  startTime_not: BigInt
+  startTime_in: [BigInt]
+  startTime_not_in: [BigInt]
+  startTime_gt: BigInt
+  startTime_lt: BigInt
+  startTime_gte: BigInt
+  startTime_lte: BigInt
+  winnerTokenId: String
+  winnerTokenId_not: String
+  winnerTokenId_in: [String]
+  winnerTokenId_not_in: [String]
+  winnerTokenId_contains: String
+  winnerTokenId_not_contains: String
+  winnerTokenId_starts_with: String
+  winnerTokenId_ends_with: String
+  winnerTokenId_not_starts_with: String
+  winnerTokenId_not_ends_with: String
+  prize: BigInt
+  prize_not: BigInt
+  prize_in: [BigInt]
+  prize_not_in: [BigInt]
+  prize_gt: BigInt
+  prize_lt: BigInt
+  prize_gte: BigInt
+  prize_lte: BigInt
+}
+
+type Treasury {
+  id: String!
+  balance: BigInt!
+}
+
+type TreasuryPage {
+  items: [Treasury!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input TreasuryFilter {
+  AND: [TreasuryFilter]
+  OR: [TreasuryFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  balance: BigInt
+  balance_not: BigInt
+  balance_in: [BigInt]
+  balance_not_in: [BigInt]
+  balance_gt: BigInt
+  balance_lt: BigInt
+  balance_gte: BigInt
+  balance_lte: BigInt
+}
+
+type Proposal {
+  id: String!
+  proposer: String!
+  targets: [String!]!
+  values: [BigInt!]!
+  signatures: [String!]!
+  calldatas: [String!]!
+  startBlock: BigInt!
+  endBlock: BigInt!
+  description: String!
+  status: String!
+  forVotes: BigInt!
+  againstVotes: BigInt!
+  abstainVotes: BigInt!
+  eta: BigInt
+}
+
+type ProposalPage {
+  items: [Proposal!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input ProposalFilter {
+  AND: [ProposalFilter]
+  OR: [ProposalFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  proposer: String
+  proposer_not: String
+  proposer_in: [String]
+  proposer_not_in: [String]
+  proposer_contains: String
+  proposer_not_contains: String
+  proposer_starts_with: String
+  proposer_ends_with: String
+  proposer_not_starts_with: String
+  proposer_not_ends_with: String
+  targets: [String]
+  targets_not: [String]
+  targets_has: String
+  targets_not_has: String
+  values: [BigInt]
+  values_not: [BigInt]
+  values_has: BigInt
+  values_not_has: BigInt
+  signatures: [String]
+  signatures_not: [String]
+  signatures_has: String
+  signatures_not_has: String
+  calldatas: [String]
+  calldatas_not: [String]
+  calldatas_has: String
+  calldatas_not_has: String
+  startBlock: BigInt
+  startBlock_not: BigInt
+  startBlock_in: [BigInt]
+  startBlock_not_in: [BigInt]
+  startBlock_gt: BigInt
+  startBlock_lt: BigInt
+  startBlock_gte: BigInt
+  startBlock_lte: BigInt
+  endBlock: BigInt
+  endBlock_not: BigInt
+  endBlock_in: [BigInt]
+  endBlock_not_in: [BigInt]
+  endBlock_gt: BigInt
+  endBlock_lt: BigInt
+  endBlock_gte: BigInt
+  endBlock_lte: BigInt
+  description: String
+  description_not: String
+  description_in: [String]
+  description_not_in: [String]
+  description_contains: String
+  description_not_contains: String
+  description_starts_with: String
+  description_ends_with: String
+  description_not_starts_with: String
+  description_not_ends_with: String
+  status: String
+  status_not: String
+  status_in: [String]
+  status_not_in: [String]
+  status_contains: String
+  status_not_contains: String
+  status_starts_with: String
+  status_ends_with: String
+  status_not_starts_with: String
+  status_not_ends_with: String
+  forVotes: BigInt
+  forVotes_not: BigInt
+  forVotes_in: [BigInt]
+  forVotes_not_in: [BigInt]
+  forVotes_gt: BigInt
+  forVotes_lt: BigInt
+  forVotes_gte: BigInt
+  forVotes_lte: BigInt
+  againstVotes: BigInt
+  againstVotes_not: BigInt
+  againstVotes_in: [BigInt]
+  againstVotes_not_in: [BigInt]
+  againstVotes_gt: BigInt
+  againstVotes_lt: BigInt
+  againstVotes_gte: BigInt
+  againstVotes_lte: BigInt
+  abstainVotes: BigInt
+  abstainVotes_not: BigInt
+  abstainVotes_in: [BigInt]
+  abstainVotes_not_in: [BigInt]
+  abstainVotes_gt: BigInt
+  abstainVotes_lt: BigInt
+  abstainVotes_gte: BigInt
+  abstainVotes_lte: BigInt
+  eta: BigInt
+  eta_not: BigInt
+  eta_in: [BigInt]
+  eta_not_in: [BigInt]
+  eta_gt: BigInt
+  eta_lt: BigInt
+  eta_gte: BigInt
+  eta_lte: BigInt
+}
+
+type Vote {
+  id: String!
+  proposalId: String!
+  voter: User
+  support: Int!
+  weight: BigInt!
+  reason: String
+  proposal: Proposal
+}
+
+type VotePage {
+  items: [Vote!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input VoteFilter {
+  AND: [VoteFilter]
+  OR: [VoteFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  proposalId: String
+  proposalId_not: String
+  proposalId_in: [String]
+  proposalId_not_in: [String]
+  proposalId_contains: String
+  proposalId_not_contains: String
+  proposalId_starts_with: String
+  proposalId_ends_with: String
+  proposalId_not_starts_with: String
+  proposalId_not_ends_with: String
+  voter: String
+  voter_not: String
+  voter_in: [String]
+  voter_not_in: [String]
+  voter_contains: String
+  voter_not_contains: String
+  voter_starts_with: String
+  voter_ends_with: String
+  voter_not_starts_with: String
+  voter_not_ends_with: String
+  support: Int
+  support_not: Int
+  support_in: [Int]
+  support_not_in: [Int]
+  support_gt: Int
+  support_lt: Int
+  support_gte: Int
+  support_lte: Int
+  weight: BigInt
+  weight_not: BigInt
+  weight_in: [BigInt]
+  weight_not_in: [BigInt]
+  weight_gt: BigInt
+  weight_lt: BigInt
+  weight_gte: BigInt
+  weight_lte: BigInt
+  reason: String
+  reason_not: String
+  reason_in: [String]
+  reason_not_in: [String]
+  reason_contains: String
+  reason_not_contains: String
+  reason_starts_with: String
+  reason_ends_with: String
+  reason_not_starts_with: String
+  reason_not_ends_with: String
+}
+
+type Listing {
+  id: String!
+  seller: User
+  tokenId: String!
+  price: BigInt!
+  isActive: Boolean!
+  isSold: Boolean!
+  isCancelled: Boolean!
+  ticket: Ticket
+}
+
+type ListingPage {
+  items: [Listing!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input ListingFilter {
+  AND: [ListingFilter]
+  OR: [ListingFilter]
+  id: String
+  id_not: String
+  id_in: [String]
+  id_not_in: [String]
+  id_contains: String
+  id_not_contains: String
+  id_starts_with: String
+  id_ends_with: String
+  id_not_starts_with: String
+  id_not_ends_with: String
+  seller: String
+  seller_not: String
+  seller_in: [String]
+  seller_not_in: [String]
+  seller_contains: String
+  seller_not_contains: String
+  seller_starts_with: String
+  seller_ends_with: String
+  seller_not_starts_with: String
+  seller_not_ends_with: String
+  tokenId: String
+  tokenId_not: String
+  tokenId_in: [String]
+  tokenId_not_in: [String]
+  tokenId_contains: String
+  tokenId_not_contains: String
+  tokenId_starts_with: String
+  tokenId_ends_with: String
+  tokenId_not_starts_with: String
+  tokenId_not_ends_with: String
+  price: BigInt
+  price_not: BigInt
+  price_in: [BigInt]
+  price_not_in: [BigInt]
+  price_gt: BigInt
+  price_lt: BigInt
+  price_gte: BigInt
+  price_lte: BigInt
+  isActive: Boolean
+  isActive_not: Boolean
+  isActive_in: [Boolean]
+  isActive_not_in: [Boolean]
+  isSold: Boolean
+  isSold_not: Boolean
+  isSold_in: [Boolean]
+  isSold_not_in: [Boolean]
+  isCancelled: Boolean
+  isCancelled_not: Boolean
+  isCancelled_in: [Boolean]
+  isCancelled_not_in: [Boolean]
+}

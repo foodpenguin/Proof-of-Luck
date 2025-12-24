@@ -1,0 +1,19 @@
+{
+  "name": "proof-of-luck-ponder",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "ponder dev",
+    "start": "ponder start",
+    "codegen": "ponder codegen"
+  },
+  "dependencies": {
+    "@ponder/core": "latest",
+    "viem": "^2.0.0",
+    "graphql": "^16.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
