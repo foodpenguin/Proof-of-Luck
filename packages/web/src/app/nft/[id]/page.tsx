@@ -101,7 +101,7 @@ export default function NFTDetailPage() {
         }
       }
     }
-  `, { id });
+  `, { id }, { refetchInterval: 2000 });
 
   if (isLoading) return <Container>Loading...</Container>;
   if (!data?.ticket) return <Container>NFT not found</Container>;

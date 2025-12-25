@@ -26,6 +26,7 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     uint256 public constant INITIAL_RADIUS = 500;
     uint256 public constant TICKET_PRICE = 100 * 1e6; // 100 USDC
     uint256 public constant PENALTY_BASIS_POINTS = 1000; // 10% (1000/10000)
+    uint256 public constant SHRINK_INTERVAL = 84 hours;
 
     struct TicketData {
         uint256 x;
@@ -47,6 +48,7 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
 
     // State
     uint256 public currentRoundId;
+    uint256 public lastShrinkTimestamp;
     mapping(uint256 => RoundInfo) public rounds;
     mapping(uint256 => TicketData) public ticketInfo;
     mapping(uint256 => uint256[]) public roundTickets; // roundId => ticketIds
@@ -108,6 +110,8 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         rounds[currentRoundId].currentCenterX = 500; // Default, will be randomized
         rounds[currentRoundId].currentCenterY = 500; // Default, will be randomized
         
+        lastShrinkTimestamp = block.timestamp;
+
         // Request initial random center
         pendingAction = 1; // Start
         _requestRandomness();
@@ -215,6 +219,25 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 distSq = getDistanceSq(ticketInfo[tokenId].x, ticketInfo[tokenId].y, round.currentCenterX, round.currentCenterY);
         
         return distSq > radius * radius;
+    }
+
+    function checkUpkeep(bytes calldata /* checkData */) external view returns (bool upkeepNeeded, bytes memory /* performData */) {
+        if (!rounds[currentRoundId].isActive) return (false, "");
+        if (pendingAction != 0) return (false, "");
+        if (rounds[currentRoundId].currentRadius == 0) return (false, "");
+        
+        upkeepNeeded = (block.timestamp - lastShrinkTimestamp) > SHRINK_INTERVAL;
+    }
+
+    function performUpkeep(bytes calldata /* performData */) external {
+        if (!rounds[currentRoundId].isActive) return;
+        if (pendingAction != 0) return;
+        if (rounds[currentRoundId].currentRadius == 0) return;
+        if ((block.timestamp - lastShrinkTimestamp) <= SHRINK_INTERVAL) return;
+
+        lastShrinkTimestamp = block.timestamp;
+        pendingAction = 2; // Shrink
+        _requestRandomness();
     }
 
     function _checkForWinner(uint256 roundId) internal {
