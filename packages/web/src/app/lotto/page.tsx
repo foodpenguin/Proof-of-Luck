@@ -2,7 +2,7 @@
 
 import styled from 'styled-components';
 import { BattleMap } from '../../components/BattleMap';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useReadContracts, useBalance, useBlock } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useReadContracts, useBalance } from 'wagmi';
 import { parseAbi, encodeAbiParameters, parseUnits, formatUnits, erc20Abi, maxUint256, createWalletClient, http, publicActions } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { foundry } from 'viem/chains';
@@ -11,6 +11,8 @@ import { POPULAR_TOKENS } from '../../utils/tokenList';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { usePonderQuery } from '../../hooks/usePonder';
 import { gql } from '../../utils/ponder';
+
+// --- ABIs ---
 
 const ALPHA_HOOK_ABI = parseAbi([
   'function lastDrawTimestamp() view returns (uint256)',
@@ -25,6 +27,22 @@ const VRF_COORDINATOR_MOCK_ABI = parseAbi([
     'function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) external',
     'function requestNumWords(uint256 requestId) view returns (uint256)'
 ]);
+
+// Battle Hook ABI 更新：加入 getRoundState
+const BATTLE_ABI = parseAbi([
+    'function currentRoundId() view returns (uint256)',
+    'function getRoundState(uint256 roundId) view returns (uint8)', // 0=Inactive, 1=Joining, 2=Battling
+    'function getCurrentRadius() view returns (uint256)',
+    'function currentCenterX() view returns (uint256)',
+    'function currentCenterY() view returns (uint256)',
+    'function startNewRound() external',
+    'function performShrink() external', 
+    'function isGameActive() view returns (bool)',
+    'function checkUpkeep(bytes calldata) view returns (bool upkeepNeeded, bytes memory)',
+    'function performUpkeep(bytes calldata) external'
+]);
+
+// --- Styles ---
 
 const Container = styled.div`
   padding: 2rem;
@@ -273,22 +291,6 @@ const RedeemButton = styled.button`
   }
 `;
 
-const TicketGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
-`;
-
-const TicketCard = styled.div`
-  border: 2px solid ${({ theme }) => theme.colors.black};
-  padding: 1rem;
-  background-color: #f9f9f9;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-`;
-
 const ZapContainer = styled.div`
   margin-bottom: 1rem;
   display: flex;
@@ -322,6 +324,8 @@ const TokenSelect = styled.select`
     border-color: ${({ theme }) => theme.colors.primary};
   }
 `;
+
+// --- Admin Bot ---
 
 const ADMIN_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const adminAccount = privateKeyToAccount(ADMIN_KEY);
@@ -378,70 +382,67 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
 
     const lastFulfilledRequestId = useRef<bigint>(0n);
 
+    // 修正後的 VRF 履行邏輯：動態檢查需要幾個 Words
     const checkAndFulfillVRF = async () => {
-    try {
-        const nextId = await adminClient.readContract({
-            address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
-            abi: VRF_COORDINATOR_MOCK_ABI,
-            functionName: 'nextRequestId'
-        }) as bigint;
-        
-        for (let id = lastFulfilledRequestId.current + 1n; id < nextId; id++) {
-            try {
-                // Read the number of words needed for this request
-                const numWordsBigInt = await adminClient.readContract({
-                    address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
-                    abi: VRF_COORDINATOR_MOCK_ABI,
-                    functionName: 'requestNumWords',
-                    args: [id]
-                }) as bigint;
-
-                // Convert bigint to number safely
-                const numWordsNeeded = Number(numWordsBigInt);
-
-                log(`Fulfilling VRF Request #${id} (Needs ${numWordsNeeded} words)...`);
-
-                // Generate random words array
-                const randomWords = Array.from({ length: numWordsNeeded }, () =>
-                    BigInt(Math.floor(Math.random() * 1e18))
-                );
-
+        try {
+            const nextId = await adminClient.readContract({
+                address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
+                abi: VRF_COORDINATOR_MOCK_ABI,
+                functionName: 'nextRequestId'
+            }) as bigint;
+            
+            // 掃描所有尚未履行的 Request
+            for (let id = lastFulfilledRequestId.current + 1n; id < nextId; id++) {
                 try {
-                    const hash = await adminClient.writeContract({
+                    // 1. 檢查這個請求需要幾個隨機數
+                    const numWordsBigInt = await adminClient.readContract({
                         address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
                         abi: VRF_COORDINATOR_MOCK_ABI,
-                        functionName: 'fulfillRandomWords',
-                        args: [id, randomWords]
-                    });
-                    log(`VRF Request #${id} Success!`);
-                    await adminClient.request({ method: 'anvil_mine' as any });
-                    lastFulfilledRequestId.current = id;
+                        functionName: 'requestNumWords',
+                        args: [id]
+                    }) as bigint;
+
+                    const numWordsNeeded = Number(numWordsBigInt);
+                    log(`Fulfilling VRF Request #${id} (Needs ${numWordsNeeded} words)...`);
+
+                    if (numWordsNeeded === 0) {
+                        // 可能是已經履行過或無效的請求，跳過
+                        lastFulfilledRequestId.current = id;
+                        continue;
+                    }
+
+                    // 2. 生成對應長度的隨機數
+                    const randomWords = Array.from({ length: numWordsNeeded }, () =>
+                        BigInt(Math.floor(Math.random() * 1e18))
+                    );
+
+                    try {
+                        const hash = await adminClient.writeContract({
+                            address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
+                            abi: VRF_COORDINATOR_MOCK_ABI,
+                            functionName: 'fulfillRandomWords',
+                            args: [id, randomWords]
+                        });
+                        log(`VRF Request #${id} Success!`);
+                        await adminClient.request({ method: 'evm_mine' }); // 使用 evm_mine
+                        lastFulfilledRequestId.current = id;
+                    } catch (e: any) {
+                        log(`VRF #${id} Failed: ${e.shortMessage || "Reverted"}`);
+                        // 即使失敗也標記處理過，避免卡死
+                        lastFulfilledRequestId.current = id;
+                    }
                 } catch (e: any) {
-                    log(`VRF #${id} Failed: ${e.shortMessage || "Reverted"}`);
+                    log(`VRF #${String(id)} Check Failed: ${e.shortMessage}`);
                     lastFulfilledRequestId.current = id;
                 }
-            } catch (e: any) {
-                log(`VRF #${String(id)} Reverted: ${e.shortMessage || "Out of Gas or Logic Error"}`);
-                // Skip failed id to avoid infinite loop
-                lastFulfilledRequestId.current = id;
             }
+        } catch (e: any) {
+            // Ignore read errors
         }
-    } catch (e: any) {
-        // Ignore read errors
-    }
-    }
+    };
 
     const [autoPlay, setAutoPlay] = useState(false);
     const [lastActionTime, setLastActionTime] = useState(0);
-
-    // Battle Hook ABI
-    const BATTLE_ABI = parseAbi([
-        'function performShrink() external',
-        'function startNewRound() external',
-        'function isGameActive() view returns (bool)',
-        'function currentRoundId() view returns (uint256)',
-        'function getCurrentRadius() view returns (uint256)'
-    ]);
 
     // Read Battle State for Bot
     const { data: isBattleActive } = useReadContract({
@@ -462,23 +463,14 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
                 // 1. Check VRF
                 await checkAndFulfillVRF();
 
-                // 2. Battle Logic
+                // 2. Battle Logic - Auto Start New Round
                 if (isBattleActive === false) {
                     log("Bot: Starting new round...");
                     await triggerContract('Battle', CONTRACTS.BattleHook.address as `0x${string}`, BATTLE_ABI, 'startNewRound');
                     setLastActionTime(Date.now());
-                } else {
-                    // If active, maybe shrink? 
-                    // For demo, let's shrink every 60 seconds (simulated by just checking if we can)
-                    // But we don't want to spam shrink. 
-                    // Let's just rely on manual shrink for now or a very slow interval?
-                    // The prompt says "If roundStatus == Active and time interval passed, call performShrink()".
-                    // I'll assume 1 minute for demo.
-                    // But I don't have the last shrink time.
-                    // I'll skip auto-shrink to avoid draining gas/spamming, unless explicitly requested to be aggressive.
-                    // "Auto-Shrink: If roundStatus == Active and time interval passed, call performShrink()."
-                    // I'll add a simple timer.
                 }
+                
+                // Note: Auto-shrink 邏輯暫時保留手動，避免在演示時跑太快
             } catch (e) {
                 console.error(e);
             }
@@ -518,11 +510,11 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
                 <button style={{...btnStyle, backgroundColor: '#ccffcc'}} disabled={loading} onClick={() => triggerContract('Savings', CONTRACTS.GeneralHook.address as `0x${string}`, ALPHA_HOOK_ABI, 'performDraw')}>
                     Trigger Savings Draw
                 </button>
-                <button style={{...btnStyle, backgroundColor: '#ccccff'}} disabled={loading} onClick={() => triggerContract('Battle', CONTRACTS.BattleHook.address as `0x${string}`, BATTLE_ABI, 'performShrink')}>
-                    Trigger Battle Shrink
-                </button>
-                 <button style={{...btnStyle, backgroundColor: '#ffcccc'}} disabled={loading} onClick={() => triggerContract('Battle', CONTRACTS.BattleHook.address as `0x${string}`, BATTLE_ABI, 'startNewRound')}>
+                <button style={{...btnStyle, backgroundColor: '#ffcccc'}} disabled={loading} onClick={() => triggerContract('Battle', CONTRACTS.BattleHook.address as `0x${string}`, BATTLE_ABI, 'startNewRound')}>
                     Start New Round
+                </button>
+                <button style={{...btnStyle, backgroundColor: '#ccccff'}} disabled={loading} onClick={() => triggerContract('Battle', CONTRACTS.BattleHook.address as `0x${string}`, BATTLE_ABI, 'performShrink')}>
+                    Trigger Game Action (Start/Shrink)
                 </button>
             </div>
         </div>
@@ -533,7 +525,7 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
 export default function LottoPage() {
   const { address } = useAccount();
 
-  // Auto Draw Logic
+  // --- Auto Draw Logic (Reads) ---
   const { data: lastDrawTimestamp } = useReadContract({
     address: CONTRACTS.AlphaHook.address as `0x${string}`,
     abi: ALPHA_HOOK_ABI,
@@ -541,45 +533,7 @@ export default function LottoPage() {
     query: { refetchInterval: 10000 }
   });
 
-  const { data: drawInterval } = useReadContract({
-    address: CONTRACTS.AlphaHook.address as `0x${string}`,
-    abi: ALPHA_HOOK_ABI,
-    functionName: 'drawInterval',
-  });
-
-  const { data: isDrawPending } = useReadContract({
-    address: CONTRACTS.AlphaHook.address as `0x${string}`,
-    abi: ALPHA_HOOK_ABI,
-    functionName: 'isDrawPending',
-    query: { refetchInterval: 10000 }
-  });
-
-  const { writeContract: performDraw } = useWriteContract();
-  const [hasAttemptedDraw, setHasAttemptedDraw] = useState(false);
-
-  /* Auto-draw removed in favor of AdminControls
-  useEffect(() => {
-    if (lastDrawTimestamp && drawInterval && isDrawPending === false && !hasAttemptedDraw) {
-      const nextDraw = Number(lastDrawTimestamp) + Number(drawInterval);
-      const now = Math.floor(Date.now() / 1000);
-      
-      if (now >= nextDraw) {
-        console.log("Auto-triggering draw...");
-        setHasAttemptedDraw(true);
-        performDraw({
-          address: CONTRACTS.AlphaHook.address as `0x${string}`,
-          abi: ALPHA_HOOK_ABI,
-          functionName: 'performDraw',
-        }, {
-            onError: (error) => {
-                console.error("Auto draw failed or rejected", error);
-            }
-        });
-      }
-    }
-  }, [lastDrawTimestamp, drawInterval, isDrawPending, performDraw, hasAttemptedDraw]);
-  */
-
+  // --- State ---
   const [selectedCoords, setSelectedCoords] = useState<{x: number, y: number} | null>(null);
   const [showMapModal, setShowMapModal] = useState(false);
   const [savingsAmount, setSavingsAmount] = useState('100');
@@ -588,12 +542,12 @@ export default function LottoPage() {
   const [zapToken, setZapToken] = useState(POPULAR_TOKENS[1].address); // Default to WETH
   const [customTokenAddress, setCustomTokenAddress] = useState('');
   const [zapAmount, setZapAmount] = useState('0');
+  const [adminLog, setAdminLog] = useState<string[]>([]);
 
-  // Fetch balances for all popular tokens + custom token
+  // --- Token Scanning ---
   const tokensToScan = useMemo(() => {
     const list = [...POPULAR_TOKENS];
     if (customTokenAddress && customTokenAddress.startsWith('0x') && customTokenAddress.length === 42) {
-        // Check if already in list
         if (!list.find(t => t.address.toLowerCase() === customTokenAddress.toLowerCase())) {
             list.push({ symbol: 'CUSTOM', address: customTokenAddress, decimals: 18, name: 'Custom Token' });
         }
@@ -601,7 +555,6 @@ export default function LottoPage() {
     return list;
   }, [customTokenAddress]);
 
-  // 1. Fetch ERC20 Balances
   const { data: erc20Balances, isLoading: isScanningERC20, refetch: refetchERC20 } = useReadContracts({
     contracts: tokensToScan.filter(t => t.symbol !== 'ETH').map(t => ({
         address: t.address as `0x${string}`,
@@ -615,7 +568,6 @@ export default function LottoPage() {
     }
   });
 
-  // 2. Fetch Native ETH Balance
   const { data: ethBalance, isLoading: isScanningETH, refetch: refetchETH } = useBalance({
     address: address as `0x${string}`,
     query: {
@@ -626,10 +578,7 @@ export default function LottoPage() {
 
   const availableTokens = useMemo(() => {
     if (!address) return [];
-    
     const result = [];
-    
-    // Add ETH if balance > 0
     if (ethBalance && ethBalance.value > BigInt(0)) {
         result.push({
             symbol: 'ETH',
@@ -639,8 +588,6 @@ export default function LottoPage() {
             balance: ethBalance.value
         });
     }
-
-    // Add ERC20s
     if (erc20Balances) {
         const erc20Tokens = tokensToScan.filter(t => t.symbol !== 'ETH');
         erc20Tokens.forEach((t, i) => {
@@ -650,13 +597,12 @@ export default function LottoPage() {
             }
         });
     }
-    
     return result;
   }, [erc20Balances, ethBalance, tokensToScan, address]);
 
   const isScanning = isScanningERC20 || isScanningETH;
 
-  // Quote USDC amount
+  // --- Quoter ---
   const { data: quoteResult, isLoading: isQuoting } = useReadContract({
     address: CONTRACTS.QuoterV2.address as `0x${string}`,
     abi: parseAbi([
@@ -678,116 +624,85 @@ export default function LottoPage() {
 
   const estimatedUSDC = quoteResult ? (quoteResult as any)[0] : BigInt(0);
 
+  // --- Transactions ---
   const { writeContract, data: hash, isPending } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
-    hash,
-  });
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash });
 
-  // Check Allowance
+  // Allowances
   const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: CONTRACTS.USDC.address as `0x${string}`,
     abi: erc20Abi,
     functionName: 'allowance',
     args: [address as `0x${string}`, CONTRACTS.MasterVault.address as `0x${string}`],
-    query: {
-        enabled: !!address,
-    }
+    query: { enabled: !!address }
   });
 
-  // Check Zap Allowance
   const { data: zapAllowance, refetch: refetchZapAllowance } = useReadContract({
     address: zapToken as `0x${string}`,
     abi: erc20Abi,
     functionName: 'allowance',
     args: [address as `0x${string}`, CONTRACTS.ZapRouter.address as `0x${string}`],
-    query: {
-        enabled: !!address && !!zapToken && isZap && zapToken !== '0x0000000000000000000000000000000000000000',
-    }
+    query: { enabled: !!address && !!zapToken && isZap && zapToken !== '0x0000000000000000000000000000000000000000' }
   });
 
-  // Get Battle Round ID
+  // --- Battle State Reads ---
   const { data: currentRoundId, refetch: refetchRoundId } = useReadContract({
     address: CONTRACTS.BattleHook.address as `0x${string}`,
-    abi: parseAbi(['function currentRoundId() view returns (uint256)']),
+    abi: BATTLE_ABI,
     functionName: 'currentRoundId',
   });
 
-  // Get Battle Radius
   const { data: battleRadius, refetch: refetchBattleRadius } = useReadContract({
     address: CONTRACTS.BattleHook.address as `0x${string}`,
-    abi: parseAbi(['function getCurrentRadius() view returns (uint256)']),
+    abi: BATTLE_ABI,
     functionName: 'getCurrentRadius',
   });
 
-  // Get Battle Center X
   const { data: battleCenterX, refetch: refetchBattleCenterX } = useReadContract({
     address: CONTRACTS.BattleHook.address as `0x${string}`,
-    abi: parseAbi(['function currentCenterX() view returns (uint256)']),
+    abi: BATTLE_ABI,
     functionName: 'currentCenterX',
   });
 
-  // Get Battle Center Y
   const { data: battleCenterY, refetch: refetchBattleCenterY } = useReadContract({
     address: CONTRACTS.BattleHook.address as `0x${string}`,
-    abi: parseAbi(['function currentCenterY() view returns (uint256)']),
+    abi: BATTLE_ABI,
     functionName: 'currentCenterY',
   });
 
-  // Check Game Status
   const { data: isGameActive, refetch: refetchGameStatus } = useReadContract({
     address: CONTRACTS.BattleHook.address as `0x${string}`,
-    abi: parseAbi(['function isGameActive() view returns (bool)']),
+    abi: BATTLE_ABI,
     functionName: 'isGameActive',
   });
 
-  const handleStartGame = () => {
-    writeContract({
-        address: CONTRACTS.BattleHook.address as `0x${string}`,
-        abi: parseAbi(['function startGame() external']),
-        functionName: 'startGame',
-    });
-  };
-
-  // Fetch Pool Data & User Tickets from Ponder
+  // --- Ponder Data ---
   const { data: ponderData, refetch: refetchPonder, error: ponderError } = usePonderQuery<{ 
     pools: { items: { id: string, totalAssets: string, activeTicketsCount: number }[] },
     user: { tickets: { items: { id: string, mode: number, assets: string, isWinner: boolean, isDead: boolean, mintTime: string, multiplier: string }[] } },
-    draws: { items: { id: string, winnerTokenId: string, prize: string, timestamp: string, winnerToken: { owner: { id: string } } }[] }
+    draws: { items: { id: string, winnerTokenId: string, prize: string, timestamp: string, winnerToken: { owner: { id: string } } }[] },
+    rounds: { items: { id: string, status: string, winnerId: string, winner: { owner: { id: string } } }[] }
   }>(
     ['lotto-data', address || ''],
     gql`
       query GetLottoData($user: String!) {
         pools {
-          items {
-            id
-            totalAssets
-            activeTicketsCount
-          }
+          items { id totalAssets activeTicketsCount }
         }
         user(id: $user) {
           tickets(orderBy: "mintTime", orderDirection: "desc", limit: 50) {
-            items {
-              id
-              mode
-              assets
-              isWinner
-              isDead
-              mintTime
-              multiplier
-            }
+            items { id mode assets isWinner isDead mintTime multiplier }
           }
         }
         draws(orderBy: "timestamp", orderDirection: "desc", limit: 5) {
+          items { id winnerTokenId prize timestamp winnerToken { owner { id } } }
+        }
+        rounds(orderBy: "id", orderDirection: "desc", limit: 1) {
           items {
             id
-            winnerTokenId
-            prize
-            timestamp
-            winnerToken {
-              owner {
-                id
-              }
-            }
+            status
+            winnerId
+            winner { owner { id } }
           }
         }
       }
@@ -795,11 +710,25 @@ export default function LottoPage() {
     { user: address ? address.toLowerCase() : '' }
   );
 
+  const refreshAll = () => {
+      refetchPonder();
+      refetchBattleRadius();
+      refetchGameStatus();
+      refetchBattleCenterX();
+      refetchBattleCenterY();
+      refetchRoundId();
+      refetchERC20();
+      refetchETH();
+  };
+
   useEffect(() => {
-    if (ponderError) {
-        console.error("Ponder Query Error:", ponderError);
-    }
-  }, [ponderError]);
+      if (isConfirmed) {
+          refetchAllowance();
+          refetchZapAllowance();
+          // Delay Ponder refetch
+          setTimeout(refreshAll, 5000);
+      }
+  }, [isConfirmed]);
 
   const getPoolStats = (mode: string) => {
     const pool = ponderData?.pools.items.find(p => p.id === mode);
@@ -812,6 +741,9 @@ export default function LottoPage() {
   const savingsStats = getPoolStats('3');
   const alphaStats = getPoolStats('1');
   const battleStats = getPoolStats('2');
+  
+  // Battle Pool specific info
+  const latestRound = ponderData?.rounds?.items[0];
 
   const handleApprove = () => {
     writeContract({
@@ -821,8 +753,6 @@ export default function LottoPage() {
         args: [CONTRACTS.MasterVault.address as `0x${string}`, maxUint256],
     });
   };
-
-  const [pendingZap, setPendingZap] = useState<{mode: number, amount: string, data: `0x${string}`}>();
 
   const handleApproveZap = () => {
     if (!zapToken) return;
@@ -838,19 +768,9 @@ export default function LottoPage() {
     });
   };
 
-  const handleWrapETH = (amount: bigint) => {
-    writeContract({
-        address: '0x4200000000000000000000000000000000000006', // WETH
-        abi: parseAbi(['function deposit() external payable']),
-        functionName: 'deposit',
-        value: amount
-    });
-  };
-
   const handleDeposit = async (mode: number, amount: string, data: `0x${string}` = '0x') => {
     if (!address) return;
     
-    // For Battle Mode (2), we need coordinates
     if (mode === 2) {
         if (!selectedCoords) {
             setShowMapModal(true);
@@ -875,20 +795,13 @@ export default function LottoPage() {
         const selectedToken = tokensToScan.find(t => t.address === zapToken);
         const decimals = selectedToken ? selectedToken.decimals : 18;
         const amountIn = parseUnits(amount, decimals);
-        
-        // Calculate minUSDC with 5% slippage
         const minUSDC = estimatedUSDC ? (estimatedUSDC * BigInt(90)) / BigInt(100) : BigInt(0);
-
-        // Determine Pool Fee
         let poolFee = 3000;
         const isETH = zapToken === '0x0000000000000000000000000000000000000000';
         const wethAddress = '0x4200000000000000000000000000000000000006';
         
-        if (isETH || zapToken.toLowerCase() === wethAddress.toLowerCase()) {
-            poolFee = 500; // 0.05%
-        }
+        if (isETH || zapToken.toLowerCase() === wethAddress.toLowerCase()) poolFee = 500;
 
-        // Check if ETH
         if (isETH) {
             writeContract({
                 address: CONTRACTS.ZapRouter.address as `0x${string}`,
@@ -896,37 +809,21 @@ export default function LottoPage() {
                     'function zapInETH(uint256 minUSDC, uint8 mode, bytes calldata data, address receiver, uint24 poolFee) external payable returns (uint256 tokenId)'
                 ]),
                 functionName: 'zapInETH',
-                args: [
-                    minUSDC,
-                    mode,
-                    data,
-                    address,
-                    poolFee
-                ],
+                args: [minUSDC, mode, data, address, poolFee],
                 value: amountIn
             });
         } else {
-            // ERC20 Zap
             if (!zapAllowance || zapAllowance < amountIn) {
                 handleApproveZap();
                 return;
             }
-
             writeContract({
                 address: CONTRACTS.ZapRouter.address as `0x${string}`,
                 abi: parseAbi([
                     'function zapIn(address tokenIn, uint256 amountIn, uint256 minUSDC, uint8 mode, bytes calldata data, address receiver, uint24 poolFee) external payable returns (uint256 tokenId)'
                 ]),
                 functionName: 'zapIn',
-                args: [
-                    zapToken as `0x${string}`,
-                    amountIn,
-                    minUSDC,
-                    mode,
-                    data,
-                    address,
-                    poolFee
-                ],
+                args: [zapToken as `0x${string}`, amountIn, minUSDC, mode, data, address, poolFee],
             });
         }
     } else {
@@ -935,19 +832,13 @@ export default function LottoPage() {
             handleApprove();
             return;
         }
-
         writeContract({
           address: CONTRACTS.MasterVault.address as `0x${string}`,
           abi: parseAbi([
             'function deposit(uint256 assets, address receiver, uint8 mode, bytes calldata data) external returns (uint256 tokenId)'
           ]),
           functionName: 'deposit',
-          args: [
-            amountBigInt,
-            address,
-            mode, 
-            data
-          ],
+          args: [amountBigInt, address, mode, data],
         });
     }
     
@@ -963,33 +854,28 @@ export default function LottoPage() {
       });
   };
 
-  useEffect(() => {
-      if (isConfirmed) {
-          refetchAllowance();
-          refetchZapAllowance();
-          refetchERC20();
-          refetchETH();
-          // Delay Ponder refetch to allow for indexing
-          setTimeout(() => {
-              refetchPonder();
-          }, 5000);
-      }
-  }, [isConfirmed]);
-
   const isApproved = (amount: string) => {
       if (!allowance) return false;
       return allowance >= parseUnits(amount || '0', 6);
   };
 
-  const [adminLog, setAdminLog] = useState<string[]>([]);
+  // 在元件內部定義輔助函數或變數
+  const roundState = ponderData?.rounds?.items[0]?.status; // Ponder 記錄的狀態
+  // 或者使用鏈上讀取的狀態 (更即時)
+  const { data: onChainState } = useReadContract({
+      address: CONTRACTS.BattleHook.address as `0x${string}`,
+      abi: BATTLE_ABI,
+      functionName: 'getRoundState',
+      args: [currentRoundId || 0n],
+      query: { refetchInterval: 2000 }
+  });
 
-  const refreshAll = () => {
-      refetchPonder();
-      refetchBattleRadius();
-      refetchGameStatus();
-      refetchERC20();
-      refetchETH();
-  };
+  // 定義狀態文字對照
+  const stateText = {
+      0: 'Inactive (回合結束)',
+      1: 'Joining (報名中)',
+      2: 'Battling (對戰中)'
+  }[Number(onChainState)];
 
   return (
     <Container>
@@ -1023,17 +909,16 @@ export default function LottoPage() {
         </div>
       </Header>
 
-      {/* Recent Winners Section */}
       {ponderData?.draws?.items && ponderData.draws.items.length > 0 && (
         <HistorySection style={{marginTop: '0', marginBottom: '3rem'}}>
-            <h2 style={{fontFamily: 'var(--font-mono)', marginBottom: '1rem'}}>RECENT WINNERS</h2>
+            <h2 style={{fontFamily: 'var(--font-mono)', marginBottom: '1rem'}}>RECENT WINNERS (Alpha/Savings)</h2>
             <div style={{overflowX: 'auto'}}>
                 <HistoryTable>
                     <thead>
                         <tr>
                             <Th>Draw Time</Th>
                             <Th>Winner</Th>
-                            <Th>Prize</Th>
+                            <Th>Prize (Assets)</Th>
                             <Th>Ticket ID</Th>
                         </tr>
                     </thead>
@@ -1053,7 +938,7 @@ export default function LottoPage() {
       )}
       
       <PoolsContainer>
-        {/* Savings Pool (General Hook - Mode 3) */}
+        {/* Savings Pool (Mode 3) */}
         <PoolSection>
           <PoolCard>
             <PoolHeader>
@@ -1249,6 +1134,10 @@ export default function LottoPage() {
                   <span style={{fontFamily: 'var(--font-mono)', fontSize: '0.8rem', marginTop: '0.5rem'}}>
                       ROUND #{currentRoundId ? currentRoundId.toString() : '0'}
                   </span>
+                  {/* 顯示詳細狀態 */}
+                  <span style={{fontSize: '0.9rem', color: '#e91e63', fontWeight: 'bold', marginTop: '0.2rem'}}>
+                    STATUS: {stateText || 'Loading...'}
+                  </span>
               </div>
             </PoolHeader>
             <StatsGrid>
@@ -1268,6 +1157,18 @@ export default function LottoPage() {
                 <StatLabel>ZONE RADIUS</StatLabel>
                 <StatValue>{battleRadius ? battleRadius.toString() : '500'}</StatValue>
               </StatBox>
+              {latestRound?.winnerId && (
+                <StatBox style={{gridColumn: 'span 2', marginTop: '1rem', borderTop: '1px dashed #ccc', paddingTop: '0.5rem'}}>
+                  <StatLabel>LAST ROUND WINNER</StatLabel>
+                  <StatValue style={{fontSize: '1rem', color: 'green'}}>
+                    Ticket #{latestRound.winnerId}
+                    <br/>
+                    <span style={{fontSize: '0.8rem', color: '#000', fontWeight: 'normal'}}>
+                      Owner: {latestRound.winner?.owner?.id ? `${latestRound.winner.owner.id.slice(0,6)}...` : 'Unknown'}
+                    </span>
+                  </StatValue>
+                </StatBox>
+              )}
             </StatsGrid>
             <ActionArea>
               <JoinButton 
@@ -1352,8 +1253,6 @@ export default function LottoPage() {
             </div>
         </HistorySection>
       )}
-
-
 
       {showMapModal && (
         <ModalOverlay onClick={() => setShowMapModal(false)}>
