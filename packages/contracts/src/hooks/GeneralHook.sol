@@ -19,7 +19,7 @@ contract GeneralHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     IVRFCoordinator public vrfCoordinator;
     bytes32 public keyHash;
     uint64 public subscriptionId;
-    uint32 public callbackGasLimit = 100000;
+    uint32 public callbackGasLimit = 2500000;
     uint16 public requestConfirmations = 3;
 
     // 彩票狀態

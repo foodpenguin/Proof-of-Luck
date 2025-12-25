@@ -22,7 +22,8 @@ const ALPHA_HOOK_ABI = parseAbi([
 const VRF_COORDINATOR_MOCK_ADDRESS = '0x498c67a44f26a8a217f5ee8e01a6c005411f1688';
 const VRF_COORDINATOR_MOCK_ABI = parseAbi([
     'function nextRequestId() view returns (uint256)',
-    'function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) external'
+    'function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) external',
+    'function requestNumWords(uint256 requestId) view returns (uint256)'
 ]);
 
 const Container = styled.div`
@@ -375,56 +376,60 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
         setLoading(false);
     };
 
-    const lastFulfilledRequestId = useRef<bigint>(-1n);
+    const lastFulfilledRequestId = useRef<bigint>(0n);
 
     const checkAndFulfillVRF = async () => {
-        log(`Checking VRF requests...`);
-        try {
-            const nextId = await adminClient.readContract({
-                address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
-                abi: VRF_COORDINATOR_MOCK_ABI,
-                functionName: 'nextRequestId'
-            }) as bigint;
-            
-            if (nextId > 0n) {
-                const requestId = nextId - 1n;
-                
-                if (requestId <= lastFulfilledRequestId.current) {
-                    return;
-                }
+    try {
+        const nextId = await adminClient.readContract({
+            address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
+            abi: VRF_COORDINATOR_MOCK_ABI,
+            functionName: 'nextRequestId'
+        }) as bigint;
+        
+        for (let id = lastFulfilledRequestId.current + 1n; id < nextId; id++) {
+            try {
+                // Read the number of words needed for this request
+                const numWordsBigInt = await adminClient.readContract({
+                    address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
+                    abi: VRF_COORDINATOR_MOCK_ABI,
+                    functionName: 'requestNumWords',
+                    args: [id]
+                }) as bigint;
 
-                log(`Fulfilling VRF Request #${requestId}...`);
-                
-                const randomWords = [
-                    BigInt(Math.floor(Math.random() * 1e18)), 
+                // Convert bigint to number safely
+                const numWordsNeeded = Number(numWordsBigInt);
+
+                log(`Fulfilling VRF Request #${id} (Needs ${numWordsNeeded} words)...`);
+
+                // Generate random words array
+                const randomWords = Array.from({ length: numWordsNeeded }, () =>
                     BigInt(Math.floor(Math.random() * 1e18))
-                ];
+                );
 
                 try {
                     const hash = await adminClient.writeContract({
                         address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
                         abi: VRF_COORDINATOR_MOCK_ABI,
                         functionName: 'fulfillRandomWords',
-                        args: [requestId, randomWords]
+                        args: [id, randomWords]
                     });
-                    log(`VRF Fulfilled: ${hash}`);
-                    await adminClient.request({ method: 'evm_mine' });
-                    lastFulfilledRequestId.current = requestId;
+                    log(`VRF Request #${id} Success!`);
+                    await adminClient.request({ method: 'anvil_mine' as any });
+                    lastFulfilledRequestId.current = id;
                 } catch (e: any) {
-                    if (e.message && (e.message.includes("Invalid request") || e.message.includes("reverted"))) {
-                        log(`VRF Request #${requestId} already fulfilled or invalid.`);
-                        lastFulfilledRequestId.current = requestId;
-                    } else {
-                        throw e;
-                    }
+                    log(`VRF #${id} Failed: ${e.shortMessage || "Reverted"}`);
+                    lastFulfilledRequestId.current = id;
                 }
-            } else {
-                log(`No pending VRF requests found (nextId=0).`);
+            } catch (e: any) {
+                log(`VRF #${String(id)} Reverted: ${e.shortMessage || "Out of Gas or Logic Error"}`);
+                // Skip failed id to avoid infinite loop
+                lastFulfilledRequestId.current = id;
             }
-        } catch (e: any) {
-            log(`VRF Error: ${e.message}`);
         }
-    };
+    } catch (e: any) {
+        // Ignore read errors
+    }
+    }
 
     const [autoPlay, setAutoPlay] = useState(false);
     const [lastActionTime, setLastActionTime] = useState(0);

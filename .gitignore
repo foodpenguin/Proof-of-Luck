@@ -13,6 +13,7 @@ packages/web/build
 # --- Ponder (Indexer) - 最重要！ ---
 packages/ponder/.ponder
 packages/ponder/generated
+packages/ponder/debug.log
 packages/ponder/ponder-env.d.ts
 
 # --- Foundry (Contracts) ---

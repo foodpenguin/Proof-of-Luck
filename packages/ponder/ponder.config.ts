@@ -8,6 +8,7 @@ import { POLTimelockABI } from "./abis/POLTimelock";
 import { TicketMarketplaceABI } from "./abis/TicketMarketplace";
 import { AlphaHookABI } from "./abis/AlphaHook";
 import { BattleHookABI } from "./abis/BattleHook";
+import { GeneralHookABI } from "./abis/GeneralHook";
 
 export default createConfig({
   networks: {
@@ -63,6 +64,12 @@ export default createConfig({
       network: "foundry",
       abi: BattleHookABI,
       address: process.env.PONDER_BATTLE_HOOK_ADDRESS as `0x${string}`,
+      startBlock: Number(process.env.PONDER_START_BLOCK) || 0,
+    },
+    GeneralHook: {
+      network: "foundry",
+      abi: GeneralHookABI,
+      address: process.env.PONDER_GENERAL_HOOK_ADDRESS as `0x${string}`,
       startBlock: Number(process.env.PONDER_START_BLOCK) || 0,
     },
   },
