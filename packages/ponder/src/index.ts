@@ -1,6 +1,13 @@
 import { ponder } from "@/generated";
 import { User, Ticket, Pool, Draw, Round, Treasury, Proposal, Vote, Listing } from "../ponder.schema";
 import { desc } from "@ponder/core";
+import { MasterVaultABI } from "../abis/MasterVault";
+import fs from "fs"; // 引入檔案系統模組
+import { parseAbi } from "viem";
+
+// 清空舊的 log 檔案
+fs.writeFileSync("debug.log", `--- Debug Start ${new Date().toISOString()} ---\n`);
+
 
 ponder.on("MasterVault:Deposit", async ({ event, context }) => {
   const { db } = context;
@@ -112,21 +119,85 @@ ponder.on("MasterVault:Transfer", async ({ event, context }) => {
   await db.update(Ticket, { id: tokenId.toString() }).set({ ownerId: to.toLowerCase() });
 });
 
-ponder.on("AlphaHook:DrawCompleted", async ({ event, context }) => {
+
+// 初始化 Debug Log
+fs.writeFileSync("debug.log", `--- 系統重啟 ${new Date().toLocaleString()} ---\n`);
+
+function logToFile(msg: string) {
+  fs.appendFileSync("debug.log", `[${new Date().toLocaleTimeString()}] ${msg}\n`);
+}
+
+async function syncTicketFromChain(tokenId: string, isWinnerUpdate: boolean, context: any) {
+  const { db, client } = context;
+  const vaultAddress = process.env.PONDER_MASTER_VAULT_ADDRESS as `0x${string}`;
+
+  try {
+    const data = await client.readContract({
+      address: vaultAddress,
+      // 2. 使用 parseAbi 包裝字串陣列
+      abi: parseAbi([
+        "function tickets(uint256) view returns (uint128 assets, uint40 mintTime, uint16 multiplier, uint8 mode, bool isDead, uint16 x, uint16 y, uint24 extra)"
+      ]),
+      functionName: "tickets",
+      args: [BigInt(tokenId)],
+    }) as any;
+
+    // Viem parseAbi 後，data 會是一個陣列 [assets, mintTime, multiplier, ...]
+    const assets = BigInt(data[0]);
+    const multiplier = Number(data[2]);
+
+    logToFile(`[SYNC] Ticket #${tokenId} -> Assets: ${assets}, Multiplier: ${multiplier}, WinStatus: ${isWinnerUpdate}`);
+
+    await db.update(Ticket, { id: tokenId }).set({
+      assets: assets,
+      multiplier: multiplier,
+      ...(isWinnerUpdate ? { isWinner: true } : {}),
+    });
+
+    return assets;
+  } catch (error: any) {
+    logToFile(`[ERROR] 同步 Ticket #${tokenId} 失敗: ${error.message}`);
+    return null;
+  }
+}
+/**
+ * 處理開獎事件 - 修正參數結構
+ */
+async function handleDrawCompleted({ event, context }: any) {
   const { db } = context;
-  const { drawId, winnerTokenId, randomWord } = event.args;
+  const { winnerTokenId, drawId } = event.args;
+  const tid = winnerTokenId.toString();
 
-  // Create Draw Record
-  await db.insert(Draw).values({
-    id: drawId.toString(),
-    timestamp: event.block.timestamp,
-    winnerTokenId: winnerTokenId.toString(),
-    prize: 0n, 
-  });
+  logToFile(`\n 開獎事件: Draw #${drawId}, Winner: #${tid}`);
 
-  // Mark Winner
-  await db.update(Ticket, { id: winnerTokenId.toString() }).set({ isWinner: true });
-});
+  const finalAssets = await syncTicketFromChain(tid, true, context);
+
+  if (finalAssets !== null) {
+    await db.insert(Draw).values({
+      id: `${event.log.address}-${drawId}`,
+      timestamp: event.block.timestamp,
+      winnerTokenId: tid,
+      prize: finalAssets,
+    });
+  }
+}
+
+/**
+ * 處理權重演化事件 - 修正參數結構
+ */
+async function handleTicketEvolved({ event, context }: any) {
+  const { tokenId, newWeight } = event.args;
+  logToFile(` 演化事件: Ticket #${tokenId} 權重變更為 ${newWeight}`);
+  
+  await syncTicketFromChain(tokenId.toString(), false, context);
+}
+
+// 註冊事件監聽
+ponder.on("AlphaHook:DrawCompleted", handleDrawCompleted);
+ponder.on("GeneralHook:DrawCompleted", handleDrawCompleted);
+
+
+
 
 // --- Battle Hook Events ---
 
@@ -147,11 +218,11 @@ ponder.on("BattleHook:GameStarted", async ({ event, context }) => {
 
 ponder.on("BattleHook:ZoneShrunk", async ({ event, context }) => {
   const { db } = context;
-  const { roundId, newRadius, centerX, centerY } = event.args;
+  const { roundId, newRadius, newX, newY } = event.args;
 
   await db.update(Round, { id: roundId.toString() }).set({
-    x: centerX,
-    y: centerY,
+    x: newX,
+    y: newY,
     radius: newRadius,
   });
 });
@@ -333,4 +404,21 @@ ponder.on("POLGovernor:ProposalExecuted", async ({ event, context }) => {
   await db.update(Proposal, { id: proposalId.toString() }).set({ status: "Executed" });
 });
 
+// 處理 AlphaHook 的權重更新
+ponder.on("AlphaHook:TicketEvolved", async ({ event, context }) => {
+  const { db } = context;
+  const { tokenId, newWeight } = event.args;
+  await db.update(Ticket, { id: tokenId.toString() }).set({
+    multiplier: Number(newWeight),
+  });
+});
+
+// 處理 GeneralHook (Savings) 的權重更新
+ponder.on("GeneralHook:TicketEvolved", async ({ event, context }) => {
+  const { db } = context;
+  const { tokenId, newWeight } = event.args;
+  await db.update(Ticket, { id: tokenId.toString() }).set({
+    multiplier: Number(newWeight),
+  });
+});
 
