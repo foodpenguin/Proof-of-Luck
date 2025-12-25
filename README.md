@@ -1,79 +1,203 @@
-# Proof Of Luck (Base Fork Edition) - System Design Document
+# Proof Of Luck (Base Fork Edition)
 
-## 1. 專案概述 (Project Overview)
-*   **名稱**: Proof Of Luck
-*   **目標**: 學習與研究型專案 (Fork Base Mainnet)。
-*   **核心概念**: 結合「無損彩票」、「DeFi 收益聚合」與「大逃殺遊戲」的結構化資產管理協議。
-*   **部署網路**: Base Mainnet (Local Fork via Anvil)。
-*   **前端交互**: Next.js + Wagmi + OKX Wallet。
+**Proof Of Luck** 是一個基於 **Base 鏈** 的去中心化遊戲化儲蓄協議。  
+它結合了 **無損彩票**、**收益聚合** 與 **大逃殺遊戲** 機制，透過模組化的 **Master Vault + Hooks** 架構，讓使用者在存入 USDC 賺取收益的同時，體驗多元的遊戲樂趣。
 
-## 2. 核心架構 (Core Architecture)
-系統採用 **"Master Vault + Hooks"** 的模組化設計，結合 **ERC-7540** 異步金庫標準。
+本專案為 **Base Mainnet Fork** 版本，使用 **Foundry (Anvil)** 進行本地模擬，並整合 **Ponder** 進行數據索引。
 
-*   **入口層 (Gateway)**:
-    *   **Zap Router**: 聚合 Aerodrome/Uniswap，支援任意代幣 (ETH/DEGEN) 一鍵 Swap 轉 USDC 並存入 Vault。
-*   **資金層 (Treasury)**:
-    *   **Master Vault (Singleton)**:
-        *   標準: **ERC-7540** (異步存取 Request/Claim) + **ERC-721** (Ticket NFT)。
-        *   職責: 保管 USDC，鑄造 NFT 憑證，對接底層 Adapter。
-*   **邏輯層 (Brain)**:
-    *   **Hooks**: 純邏輯合約，無資金。Vault 在 `deposit/redeem` 前後呼叫 Hook。
-    *   **Hook 列表**:
-        1.  `GeneralHook`: 每日開獎邏輯，VRF 快照。
-        2.  `AlphaHook`: 保險額度檢查，UMA 防賄賂。
-        3.  `BattleHook`: 地圖座標記錄，縮圈淘汰邏輯。
-*   **策略層 (Hands)**:
-    *   **Adapters**: 統一接口，對接外部 DeFi。
-    *   `AaveAdapter`: 對接 Aave V3 (一般池)。
-    *   `AeroAdapter`: 對接 Aerodrome Gauge (Battle 池)。
+---
 
-## 3. 遊戲模式機制 (Game Mechanics)
+##  核心特色 (Key Features)
 
-| 模式 | 頻率 | 風險 | 收益來源 | 機制亮點 |
-| :--- | :--- | :--- | :--- | :--- |
-| **Savings (一般)** | 每日 | 零 | Aave V3 | 隨機 1% NFT 權重進化，隨存隨取。 |
-| **Alpha (收益)** | 每週 | 低 | 透過治理投票 | **$POL 質押擔保**。巨額獎金效應。UMA + Slashing 雙重防護。 |
-| **Battle (大逃殺)** | 賽季 | 零* | Aerodrome | **環狀地圖縮圈**。淘汰者利息充公。早退罰款。倖存者全拿。 |
-*(備註: 大逃殺本金無損，但被淘汰會損失利息)*
+- **無損彩票 (No-Loss Lottery)**  
+  本金存入 Aave / Aerodrome 生息，收益用於獎金分配，本金安全無虞。
 
-## 4. 代幣經濟與治理 (Tokenomics & Governance)
-*   **代幣**: `$POL` (ERC20Votes)。
-*   **飛輪效應**:
-    1.  協議收入 (20% Alpha 利潤 + 罰款) -> **回購 $POL** -> **分發給質押者**。
-    2.  質押 $POL -> 提供 Alpha 池 **槓桿保險額度 (Cap)** -> 允許更多 TVL。
-*   **治理安全**:
-    *   **UMA**: 樂觀預言機，攔截惡意提案。
-    *   **Slashing**: 若策略虧損，自動拍賣質押的 $POL 賠付 Alpha 池。
+- **大逃殺模式 (Battle Royale)**  
+  獨創的 DeFi 遊戲機制。存入資金作為「門票」進入地圖，隨著時間推移「縮圈」，倖存者獨得該回合所有收益。
 
-## 5. 技術棧 (Tech Stack)
-*   **區塊鏈節點**: **Foundry (Anvil)** - Fork Base Mainnet。
-*   **智能合約**: **Solidity**。
-*   **數據索引**: **Ponder** (取代 The Graph，本地極速索引)。
-*   **Mock 工具**: `VRFCoordinatorMock` (模擬 Chainlink), `vm.warp` (模擬時間), `vm.deal` (模擬資金)。
-*   **前端**: **Next.js**, **RainbowKit**, **Wagmi (viem)**。
-*   **錢包**: **OKX Wallet** (自定義 RPC: `http://127.0.0.1:8545`).
+- **Zap 一鍵存款**  
+  整合 Uniswap V3 Router，支援任意代幣（ETH、DEGEN、AERO…）自動兌換為 USDC 並存入遊戲池。
 
-## 6. 開發路線圖 (Development Roadmap)
+- **動態 NFT**  
+  每一筆存款都會鑄造一張 ERC-721 票券，SVG 圖片完全鏈上生成，即時顯示資產餘額、遊戲狀態與地圖座標。
 
-### Sprint 1: 地基 (The Core)
-*   [ ] 定義 `IPOLHook` 接口。
-*   [ ] 開發 `MasterVault` (ERC-7540 + ERC-721)。
-*   [ ] 開發 `AaveAdapter` 並在 Fork 環境測試存取款。
+- **治理代幣 ($POL)**  
+  結合 Staking 與 Governor 機制，質押 $POL 可獲得投票權並影響協議參數。
 
-### Sprint 2: 大腦 (The Brains)
-*   [ ] 開發 `VRFCoordinatorMock`。
-*   [ ] 開發 `GeneralHook`: 每日開獎與 NFT 權重進化。
-*   [ ] 開發 `BattleHook`: 地圖座標解碼與縮圈邏輯。
+---
 
-### Sprint 3: 治理 (The Law)
-*   [ ] 發行 `$POL` 代幣 (ERC20Votes)。
-*   [ ] 部署 Governor 合約。
-*   [ ] 開發 `AlphaHook`: 實作保險額度檢查 (Leverage Cap)。
+##  架構說明
 
-### Sprint 4: 數據 (The Eyes)
-*   [ ] 配置 Ponder。
-*   [ ] 索引: NFT 鑄造、等級變化、開獎事件、提案狀態。
+### Master Vault
+- 資金託管核心  
+- 負責鑄造 NFT  
+- 路由資金至各個 Adapter
 
-### Sprint 5: 入口 (The Gateway)
-*   [ ] 開發 `ZapRouter`: 整合 Aerodrome Router。
-*   [ ] 前端整合: 連接 OKX 錢包，讀取 Ponder API，呼叫合約。
+---
+
+### Hooks（純邏輯合約）
+
+- **GeneralHook**  
+  每日開獎，權重進化機制
+
+- **AlphaHook**  
+  每週開獎，槓桿保險額度檢查（Leverage Cap）
+
+- **BattleHook**  
+  回合制大逃殺，負責地圖、縮圈與淘汰邏輯
+
+---
+
+### Adapters（策略適配器）
+
+- **AaveAdapter**  
+  存入 Aave V3 借貸池
+
+- **AeroAdapter**  
+  將 USDC 轉為 LP（如 USDC–USDbC），並質押至 Aerodrome Gauge
+
+---
+
+### Indexer
+- 使用 **Ponder** 取代 The Graph  
+- 實現極速本地索引
+
+---
+
+## 遊戲模式 (Game Modes)
+
+| 模式 | Hook | 底層策略 | 機制說明 |
+|----|----|----|----|
+| Savings（儲蓄） | GeneralHook | Aave V3 | 每日開獎，隨存隨取，未中獎 NFT 權重隨時間進化 |
+| Alpha（進階） | AlphaHook | DAO決定 | 每週開獎，高額獎金池，TVL 上限由 $POL 質押量決定，20% 收益回購 $POL |
+| Battle（大逃殺） | BattleHook | Aerodrome | 回合制生存遊戲，VRF 隨機縮圈，圈外淘汰，倖存者獨得全部利息 |
+
+---
+
+## 🛠 技術棧 (Tech Stack)
+
+- **Smart Contracts**：Solidity ^0.8.30, Foundry（Forge / Cast / Anvil）
+- **Indexer**：Ponder（TypeScript）
+- **Frontend**：Next.js 14, Wagmi, Viem, RainbowKit, Styled-components
+- **Chain**：Base Mainnet（Local Fork）
+
+---
+
+## 快速開始 (Getting Started)
+
+### 1. 環境準備
+
+請確保已安裝：
+
+- Foundry  
+- Node.js（v18+）  
+- pnpm 或 Bun  
+
+---
+
+### 2. 啟動區塊鏈（Base Fork）
+
+```bash
+# 在 packages/contracts 目錄下
+cd packages/contracts
+
+# 建立 .env 並填入 RPC
+echo "BASE_RPC_URL=https://mainnet.base.org" > .env
+
+# 啟動 Anvil（Fork 模式）
+anvil --fork-url https://mainnet.base.org --chain-id 31337 --block-time 2
+```
+
+---
+
+### 3. 部署合約
+```bash
+cd packages/contracts
+
+forge script script/DeployFork.s.sol:DeployFork \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast \
+  --unlocked
+```
+
+- 部署完成後會自動更新：
+
+- packages/web/src/utils/contracts.ts
+
+- packages/ponder/.env.local
+
+---
+
+### 4. 啟動 Indexer（Ponder）
+```bash
+cd packages/ponder
+pnpm install
+pnpm dev
+Ponder 運行於：http://localhost:42069
+```
+---
+
+### 5. 啟動前端（Web）
+```bash
+cd packages/web
+pnpm install
+pnpm dev
+```
+
+- 前端運行於：http://localhost:3000
+
+## 測試與操作指南
+### 獲取測試代幣
+- 部署腳本會自動從 Base 鏈巨鯨帳戶轉移 USDC 到測試帳戶（Account #0）。
+
+- 若需要更多代幣：
+
+```bash 
+forge script script/FundAccount.s.sol \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast \
+  --unlocked
+```
+---
+
+## 前端功能
+**Lotto Page** 
+- Savings / Alpha：輸入 USDC 存款（支援 Zap）
+
+- Battle：點擊 Enter Battle，在地圖上選擇落點座標
+
+- Admin Bot：支援 evm_increaseTime
+
+- Mock VRF 開獎 / 縮圈
+
+**NFT Page**
+- 查看、上架、購買 Ticket NFT
+
+**Governance Page**
+- 質押 $POL
+
+- 建立與投票提案
+
+**POL Page**
+- USDC ↔ $POL 兌換
+
+## 目錄結構
+```text
+packages/
+├── contracts/
+│   ├── src/
+│   │   ├── MasterVault.sol
+│   │   ├── hooks/
+│   │   ├── adapters/
+│   │   └── governance/
+│   └── script/
+├── ponder/
+│   ├── ponder.schema.ts
+│   └── src/index.ts
+└── web/
+    ├── src/app/
+    └── src/components/
+```
+
+## 授權
+MIT License
