@@ -1,19 +1,26 @@
-# Dependencies
-node_modules/
-**/node_modules/
-.pnp
-.pnp.js
+# --- Dependencies ---
+node_modules
+.pnpm-store
 
-# Next.js build output
-.next/
-out/
-build/
-dist/
+# --- Next.js (Web) ---
+packages/web/.next
+packages/web/out
+packages/web/build
+.env
+.env.local
+.env.*.local
 
-# System Files
+# --- Ponder (Indexer) - 最重要！ ---
+packages/ponder/.ponder
+packages/ponder/generated
+packages/ponder/ponder-env.d.ts
+
+# --- Foundry (Contracts) ---
+packages/contracts/cache
+packages/contracts/out
+packages/contracts/broadcast
+packages/contracts/out-optimized
+
+# --- System ---
 .DS_Store
 Thumbs.db
-
-# Environment variables
-.env
-.env*.local

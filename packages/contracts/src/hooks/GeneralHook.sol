@@ -197,21 +197,24 @@ contract GeneralHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         if (winnerId != 0) {
             MasterVault(vault).distributeYieldToTicket(winnerId);
             nftWeight[winnerId] = 100; // Reset weight
+            MasterVault(vault).updateTicketMultiplier(winnerId, 100); // Sync to Vault
             emit DrawCompleted(currentDrawId, winnerId, randomWord);
         }
-        
-        // 4. Increase Weight for 1%
-        // Use randomWord hash to pick
-        uint256 count = activeTickets.length / 100;
-        if (count == 0 && activeTickets.length > 0) count = 1; // At least 1
-        
-        for (uint256 i = 0; i < count; i++) {
-            // Simple pseudo-random selection
-            uint256 idx = uint256(keccak256(abi.encode(randomWord, i))) % activeTickets.length;
-            uint256 tid = activeTickets[idx];
+
+        // 4. Evolve Losers
+        for (uint256 i = 0; i < activeTickets.length; i++) {
+            uint256 tid = activeTickets[i];
             if (tid != winnerId) {
-                nftWeight[tid] += 5; // +0.05 (Base 100)
-                emit TicketEvolved(tid, nftWeight[tid]);
+                uint256 oldW = nftWeight[tid];
+                if (oldW == 0) oldW = 100;
+                
+                // Increase by 1% (Max 200%)
+                if (oldW < 200) {
+                    uint256 newW = oldW + 1;
+                    nftWeight[tid] = newW;
+                    MasterVault(vault).updateTicketMultiplier(tid, uint16(newW)); // Sync to Vault
+                    emit TicketEvolved(tid, newW);
+                }
             }
         }
         

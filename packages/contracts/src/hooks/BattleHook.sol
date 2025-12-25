@@ -8,20 +8,20 @@ import {IVRFCoordinator} from "../interfaces/IVRFCoordinator.sol";
 
 /**
  * @title BattleHook
- * @notice 大逃殺模式 (Battle Royale) 邏輯 Hook。
- * @dev 包含環狀地圖、縮圈機制與淘汰邏輯。
+ * @notice Battle Royale Logic Hook (Round-Based).
+ * @dev Supports infinite replayability via Rounds (Epochs).
  */
 contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     address public immutable vault;
     
-    // VRF 配置
+    // VRF Config
     IVRFCoordinator public vrfCoordinator;
     bytes32 public keyHash;
     uint64 public subscriptionId;
     uint32 public callbackGasLimit = 100000;
     uint16 public requestConfirmations = 3;
 
-    // 遊戲參數
+    // Game Constants
     uint256 public constant MAP_SIZE = 1000;
     uint256 public constant INITIAL_RADIUS = 500;
     uint256 public constant TICKET_PRICE = 100 * 1e6; // 100 USDC
@@ -32,28 +32,37 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 y;
         bool isEliminated;
         bool exists;
+        uint256 roundId; // Track which round this ticket belongs to
     }
 
+    struct RoundInfo {
+        uint256 startTime;
+        uint256 endTime;
+        uint256 currentCenterX;
+        uint256 currentCenterY;
+        uint256 currentRadius;
+        bool isActive;
+        uint256 winnerId;
+    }
+
+    // State
+    uint256 public currentRoundId;
+    mapping(uint256 => RoundInfo) public rounds;
     mapping(uint256 => TicketData) public ticketInfo;
-    uint256[] public activeTickets; // 追蹤所有活躍玩家
-    
-    uint256 public gameStartTime;
-    bool public isGameActive;
-    uint256 public declaredWinner;
-    address public governance;
+    mapping(uint256 => uint256[]) public roundTickets; // roundId => ticketIds
 
-    // Zone State
-    uint256 public currentCenterX;
-    uint256 public currentCenterY;
-    uint256 public currentRadius;
+    // VRF State
     uint8 public pendingAction; // 0=None, 1=Start, 2=Shrink
-
-    event GameStarted(uint256 startTime);
-    event ZoneShrunk(uint256 newX, uint256 newY, uint256 newRadius);
-    event PlayerEliminated(uint256 indexed tokenId);
-    event WinnerDeclared(uint256 indexed tokenId, uint256 prize);
+    
+    // Events
+    event GameStarted(uint256 indexed roundId, uint256 startTime);
+    event ZoneShrunk(uint256 indexed roundId, uint256 newX, uint256 newY, uint256 newRadius);
+    event PlayerEliminated(uint256 indexed roundId, uint256 indexed tokenId);
+    event WinnerDeclared(uint256 indexed roundId, uint256 indexed tokenId, uint256 prize);
     event GovernanceUpdated(address indexed newGovernance);
     event ShrinkRequested(uint256 requestId);
+
+    address public governance;
 
     constructor(
         address _vault,
@@ -67,10 +76,8 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         keyHash = _keyHash;
         subscriptionId = _subId;
         
-        // Default center
-        currentCenterX = 500;
-        currentCenterY = 500;
-        currentRadius = INITIAL_RADIUS;
+        // Initialize Round 0 (Dummy)
+        currentRoundId = 0;
     }
 
     function setGovernance(address _governance) external onlyOwner {
@@ -83,31 +90,38 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         _;
     }
 
+    // --- Game Lifecycle ---
+
     /**
-     * @notice 啟動遊戲。
+     * @notice Start a new round.
+     * @dev Increments roundId, sets state to Active.
      */
-    function startGame() external onlyOwner {
-        require(!isGameActive, "Game already active");
+    function startNewRound() external onlyOwner {
+        require(!rounds[currentRoundId].isActive, "Current round still active");
         require(pendingAction == 0, "Action pending");
         
-        isGameActive = true;
-        gameStartTime = block.timestamp;
-        declaredWinner = 0;
+        currentRoundId++;
+        
+        rounds[currentRoundId].isActive = true;
+        rounds[currentRoundId].startTime = block.timestamp;
+        rounds[currentRoundId].currentRadius = INITIAL_RADIUS;
+        rounds[currentRoundId].currentCenterX = 500; // Default, will be randomized
+        rounds[currentRoundId].currentCenterY = 500; // Default, will be randomized
         
         // Request initial random center
         pendingAction = 1; // Start
         _requestRandomness();
         
-        emit GameStarted(gameStartTime);
+        emit GameStarted(currentRoundId, block.timestamp);
     }
 
     /**
-     * @notice 觸發縮圈。
+     * @notice Trigger zone shrink for the CURRENT round.
      */
     function performShrink() external onlyOwner {
-        require(isGameActive, "Game not active");
+        require(rounds[currentRoundId].isActive, "Game not active");
         require(pendingAction == 0, "Action pending");
-        require(currentRadius > 0, "Already min radius");
+        require(rounds[currentRoundId].currentRadius > 0, "Already min radius");
         
         pendingAction = 2; // Shrink
         _requestRandomness();
@@ -130,32 +144,44 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 newX = randomWords[0] % MAP_SIZE;
         uint256 newY = randomWords[1] % MAP_SIZE;
         
-        currentCenterX = newX;
-        currentCenterY = newY;
+        RoundInfo storage round = rounds[currentRoundId];
+        
+        round.currentCenterX = newX;
+        round.currentCenterY = newY;
         
         if (pendingAction == 1) {
             // Start Game: Reset radius
-            currentRadius = INITIAL_RADIUS;
+            round.currentRadius = INITIAL_RADIUS;
         } else if (pendingAction == 2) {
             // Shrink: Halve radius
-            currentRadius = currentRadius / 2;
+            round.currentRadius = round.currentRadius / 2;
         }
         
         pendingAction = 0;
-        emit ZoneShrunk(currentCenterX, currentCenterY, currentRadius);
+        emit ZoneShrunk(currentRoundId, round.currentCenterX, round.currentCenterY, round.currentRadius);
+        
+        // Check for winner after shrink
+        _checkForWinner(currentRoundId);
     }
 
-    /**
-     * @notice 獲取當前安全區半徑。
-     */
+    // --- Game Logic ---
+
     function getCurrentRadius() public view returns (uint256) {
-        return currentRadius;
+        return rounds[currentRoundId].currentRadius;
+    }
+    
+    function currentCenterX() public view returns (uint256) {
+        return rounds[currentRoundId].currentCenterX;
     }
 
+    function currentCenterY() public view returns (uint256) {
+        return rounds[currentRoundId].currentCenterY;
+    }
+    
+    function isGameActive() public view returns (bool) {
+        return rounds[currentRoundId].isActive;
+    }
 
-    /**
-     * @notice 計算兩點在環狀地圖上的距離平方。
-     */
     function getDistanceSq(uint256 x1, uint256 y1, uint256 x2, uint256 y2) public pure returns (uint256) {
         uint256 dx = x1 > x2 ? x1 - x2 : x2 - x1;
         uint256 dy = y1 > y2 ? y1 - y2 : y2 - y1;
@@ -170,78 +196,93 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         return dx * dx + dy * dy;
     }
 
-    /**
-     * @notice 檢查 Ticket 是否被淘汰。
-     */
     function checkElimination(uint256 tokenId) public view returns (bool) {
         if (!ticketInfo[tokenId].exists) return false;
         if (ticketInfo[tokenId].isEliminated) return true;
+        
+        uint256 roundId = ticketInfo[tokenId].roundId;
+        RoundInfo storage round = rounds[roundId];
+        
+        // If round is ended, use the final state (already captured in isEliminated or winner)
+        // But for dynamic checking during the game:
+        if (!round.isActive && round.endTime > 0) {
+             // Round ended, if not marked eliminated, they survived? 
+             // Actually, if round ended, winner is declared. Everyone else is eliminated.
+             return ticketInfo[tokenId].isEliminated;
+        }
 
-        uint256 radius = getCurrentRadius();
-        uint256 distSq = getDistanceSq(ticketInfo[tokenId].x, ticketInfo[tokenId].y, currentCenterX, currentCenterY);
+        uint256 radius = round.currentRadius;
+        uint256 distSq = getDistanceSq(ticketInfo[tokenId].x, ticketInfo[tokenId].y, round.currentCenterX, round.currentCenterY);
         
         return distSq > radius * radius;
     }
 
-    /**
-     * @notice 判斷贏家。
-     * @dev 邏輯:
-     * 1. 如果半徑 > 0: 檢查是否只剩 1 人存活。
-     * 2. 如果半徑 == 0: 所有人都在圈外，取距離中心最近者。
-     * @return winnerTokenId 贏家的 Token ID (若無贏家則為 0)。
-     */
-    function getWinner() public view returns (uint256 winnerTokenId) {
-        if (declaredWinner != 0) return declaredWinner;
-        if (!isGameActive) return 0;
-        if (activeTickets.length == 0) return 0;
+    function _checkForWinner(uint256 roundId) internal {
+        RoundInfo storage round = rounds[roundId];
+        if (!round.isActive) return;
 
-        uint256 radius = getCurrentRadius();
+        uint256[] memory tickets = roundTickets[roundId];
+        if (tickets.length == 0) return;
 
-        if (radius > 0) {
-            // 模式 1: Last Man Standing
-            uint256 survivorCount = 0;
-            uint256 lastSurvivor = 0;
-
-            for (uint256 i = 0; i < activeTickets.length; i++) {
-                uint256 tid = activeTickets[i];
-                if (!checkElimination(tid)) {
+        uint256 survivorCount = 0;
+        uint256 lastSurvivor = 0;
+        
+        // Check survivors
+        for (uint256 i = 0; i < tickets.length; i++) {
+            uint256 tid = tickets[i];
+            if (!ticketInfo[tid].isEliminated) {
+                // Re-check dynamic elimination
+                uint256 distSq = getDistanceSq(ticketInfo[tid].x, ticketInfo[tid].y, round.currentCenterX, round.currentCenterY);
+                if (distSq > round.currentRadius * round.currentRadius) {
+                    ticketInfo[tid].isEliminated = true;
+                    emit PlayerEliminated(roundId, tid);
+                } else {
                     survivorCount++;
                     lastSurvivor = tid;
                 }
             }
+        }
 
-            if (survivorCount == 1) {
-                return lastSurvivor;
-            }
-        } else {
-            // 模式 2: Sudden Death (Radius == 0)
-            // 找出距離中心最近的玩家
+        if (survivorCount == 1) {
+            _declareWinner(roundId, lastSurvivor);
+        } else if (round.currentRadius == 0 && survivorCount > 1) {
+            // Sudden Death: Closest to center
             uint256 minDistSq = type(uint256).max;
             uint256 bestCandidate = 0;
             
-            for (uint256 i = 0; i < activeTickets.length; i++) {
-                uint256 tid = activeTickets[i];
-                uint256 distSq = getDistanceSq(ticketInfo[tid].x, ticketInfo[tid].y, currentCenterX, currentCenterY);
-                
-                if (distSq < minDistSq) {
-                    minDistSq = distSq;
-                    bestCandidate = tid;
+            for (uint256 i = 0; i < tickets.length; i++) {
+                uint256 tid = tickets[i];
+                if (!ticketInfo[tid].isEliminated) {
+                    uint256 distSq = getDistanceSq(ticketInfo[tid].x, ticketInfo[tid].y, round.currentCenterX, round.currentCenterY);
+                    if (distSq < minDistSq) {
+                        minDistSq = distSq;
+                        bestCandidate = tid;
+                    }
                 }
             }
-            return bestCandidate;
+            _declareWinner(roundId, bestCandidate);
+        } else if (survivorCount == 0 && tickets.length > 0) {
+             // Everyone died? Should not happen if logic is correct, but just in case end round
+             round.isActive = false;
+             round.endTime = block.timestamp;
         }
-
-        return 0; // 遊戲尚未結束
     }
 
-    /**
-     * @notice 領取獎金 (僅限贏家)。
-     * @dev 這是額外的領獎函式，因為 getRedeemableAmount 是 view 且無法輕易存取 Adapter。
-     *      贏家應先呼叫此函式觸發獎金發放，或由 Vault 在 redeem 時觸發。
-     *      這裡我們採用 "標記贏家" 的方式，讓 Vault 在 redeem 時知道要全額提款。
-     */
-    function isWinner(uint256 tokenId) external view returns (bool) {
-        return getWinner() == tokenId;
+    function _declareWinner(uint256 roundId, uint256 winnerId) internal {
+        RoundInfo storage round = rounds[roundId];
+        round.winnerId = winnerId;
+        round.isActive = false;
+        round.endTime = block.timestamp;
+        
+        // Mark all others as eliminated (if not already)
+        uint256[] memory tickets = roundTickets[roundId];
+        for (uint256 i = 0; i < tickets.length; i++) {
+            if (tickets[i] != winnerId) {
+                ticketInfo[tickets[i]].isEliminated = true;
+            }
+        }
+        
+        emit WinnerDeclared(roundId, winnerId, 0); // Prize calculated at redeem
     }
 
     // --- IPOLHook Implementation ---
@@ -253,9 +294,7 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         bytes calldata data
     ) external view override onlyVault {
         require(assets == TICKET_PRICE, "Invalid ticket price");
-        // 如果遊戲已開始，是否允許加入？
-        // 假設允許中途加入，但必須在安全區內，否則立即淘汰。
-        // 這裡簡單起見，允許加入。
+        require(rounds[currentRoundId].isActive, "Round not active");
         
         require(data.length == 64, "Invalid data length"); // 2 * 32 bytes (x, y)
         (uint256 x, uint256 y) = abi.decode(data, (uint256, uint256));
@@ -269,13 +308,16 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         bytes calldata data
     ) external override onlyVault {
         (uint256 x, uint256 y) = abi.decode(data, (uint256, uint256));
+        
         ticketInfo[shares] = TicketData({
             x: x,
             y: y,
             isEliminated: false,
-            exists: true
+            exists: true,
+            roundId: currentRoundId
         });
-        activeTickets.push(shares);
+        
+        roundTickets[currentRoundId].push(shares);
     }
 
     function onRedeemRequest(
@@ -283,51 +325,46 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 shares,
         bytes calldata /* data */
     ) external override onlyVault {
-        // Check if this user is the winner BEFORE removing them
-        // If they are the winner, we lock it in so claimRedeem can see it.
-        uint256 currentWinner = getWinner();
-        if (currentWinner == shares) {
-            declaredWinner = shares;
-        }
-
-        // 移除 Ticket (Swap and Pop)
-        // 尋找並移除 (O(N) cost, but N is limited in Battle Royale usually)
-        for (uint256 i = 0; i < activeTickets.length; i++) {
-            if (activeTickets[i] == shares) {
-                activeTickets[i] = activeTickets[activeTickets.length - 1];
-                activeTickets.pop();
-                break;
-            }
-        }
-        
-        // 注意: 我們不能在這裡 delete ticketInfo[shares]，
-        // 因為 claimRedeem 隨後會呼叫 getRedeemableAmount，
-        // 而 getRedeemableAmount 需要讀取 ticketInfo 來判斷是否被淘汰。
-        // 如果在這裡刪除了，checkElimination 會因為 !exists 返回 false，
-        // 導致被誤判為 "倖存者提早退出" (扣罰金)。
+        // Just cleanup if needed, but we keep history in roundTickets
+        // We can mark as not exists to prevent double logic if needed, 
+        // but ticket is burned by Vault anyway.
+        ticketInfo[shares].exists = false;
     }
-
 
     function getRedeemableAmount(
         uint256 tokenId,
         uint256 principal
     ) external view override returns (uint256) {
-        // 檢查是否為贏家
-        uint256 winnerId = getWinner();
-        if (winnerId != 0 && winnerId == tokenId) {
-            return principal; 
-        }
-
-        bool eliminated = checkElimination(tokenId);
+        uint256 roundId = ticketInfo[tokenId].roundId;
+        RoundInfo storage round = rounds[roundId];
         
-        if (eliminated) {
-            // 淘汰者取回本金 (利息充公)
-            return principal;
+        // If round is still active, and user is not eliminated, they are "Early Exiting"
+        if (round.isActive) {
+             if (checkElimination(tokenId)) {
+                 return principal; // Eliminated, get principal
+             } else {
+                 // Early exit penalty
+                 uint256 penalty = (principal * PENALTY_BASIS_POINTS) / 10000;
+                 return principal - penalty;
+             }
         } else {
-            // 倖存者提早退出，扣除 10% 罰金
-            // 罰金留在 Adapter (即 Protocol Revenue)
-            uint256 penalty = (principal * PENALTY_BASIS_POINTS) / 10000;
-            return principal - penalty;
+            // Round Ended
+            if (round.winnerId == tokenId) {
+                // Winner gets Principal + Yield (Yield is handled by Vault, here we return Principal)
+                return principal;
+            } else {
+                return principal;
+            }
         }
+    }
+
+    /**
+     * @notice Check if a ticket is the winner of its round.
+     * @dev Used by MasterVault to determine if yield should be paid out.
+     */
+    function isWinner(uint256 tokenId) external view returns (bool) {
+        if (!ticketInfo[tokenId].exists) return false;
+        uint256 roundId = ticketInfo[tokenId].roundId;
+        return rounds[roundId].winnerId == tokenId;
     }
 }

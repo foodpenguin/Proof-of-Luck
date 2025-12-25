@@ -1,5 +1,5 @@
 import { ponder } from "@/generated";
-import { User, Ticket, Pool, Draw, Battle, Treasury, Proposal, Vote, Listing } from "../ponder.schema";
+import { User, Ticket, Pool, Draw, Round, Treasury, Proposal, Vote, Listing } from "../ponder.schema";
 
 ponder.on("MasterVault:Deposit", async ({ event, context }) => {
   const { db } = context;
@@ -15,6 +15,16 @@ ponder.on("MasterVault:Deposit", async ({ event, context }) => {
     totalDeposited: row.totalDeposited + assets,
   }));
 
+  // Determine Round ID for Battle Mode (Mode 2)
+  let roundId = null;
+  if (mode === 2) {
+      // Find the latest active round
+      const rounds = await db.find(Round, { limit: 1, orderBy: { startTime: "desc" } });
+      if (rounds.items.length > 0 && rounds.items[0].status === "Active") {
+          roundId = rounds.items[0].id;
+      }
+  }
+
   // Create Ticket
   await db.insert(Ticket).values({
     id: tokenId.toString(),
@@ -23,9 +33,11 @@ ponder.on("MasterVault:Deposit", async ({ event, context }) => {
     assets: assets,
     mintTime: event.block.timestamp,
     isDead: false,
+    isEliminated: false,
     isWinner: false,
     prize: 0n,
     multiplier: 100,
+    roundId: roundId,
   });
 
   // Update Pool
@@ -48,6 +60,16 @@ ponder.on("MasterVault:RedeemClaim", async ({ event, context }) => {
 
   // Mark Ticket as Dead
   await db.update(Ticket, { id: tokenId.toString() }).set({ isDead: true });
+
+  // Cancel any active listing (Zombie Order Fix)
+  try {
+    await db.update(Listing, { id: tokenId.toString() }).set({ 
+        isActive: false,
+        isCancelled: true 
+    });
+  } catch (e) {
+    // Listing might not exist, ignore
+  }
 
   // Update Pool
   await db.update(Pool, { id: ticket.mode.toString() }).set((row) => ({
@@ -98,34 +120,112 @@ ponder.on("AlphaHook:DrawCompleted", async ({ event, context }) => {
   await db.update(Ticket, { id: winnerTokenId.toString() }).set({ isWinner: true });
 });
 
+// --- Battle Hook Events ---
+
 ponder.on("BattleHook:GameStarted", async ({ event, context }) => {
   const { db } = context;
-  const { startTime } = event.args;
+  const { roundId, startTime } = event.args;
 
-  await db.insert(Battle).values({
-    id: startTime.toString(),
+  await db.insert(Round).values({
+    id: roundId.toString(),
     startTime: startTime,
     prize: 0n,
+    radius: 500n, // Initial Radius
+    x: 500n, // Initial Center
+    y: 500n, // Initial Center
+    status: "Active",
   });
+});
+
+ponder.on("BattleHook:ZoneShrunk", async ({ event, context }) => {
+  const { db } = context;
+  const { roundId, newRadius, centerX, centerY } = event.args;
+
+  await db.update(Round, { id: roundId.toString() }).set({
+    x: centerX,
+    y: centerY,
+    radius: newRadius,
+  });
+});
+
+ponder.on("BattleHook:PlayerEliminated", async ({ event, context }) => {
+  const { db } = context;
+  const { roundId, player } = event.args;
+
+  // Find ticket for this player in this round
+  // Note: This is inefficient if there are many tickets. 
+  // Ideally we should filter by roundId and ownerId in the DB query.
+  const tickets = await db.find(Ticket, { limit: 1000 });
+  const ticket = tickets.items.find(t => t.ownerId.toLowerCase() === player.toLowerCase() && t.roundId === roundId.toString());
+
+  if (ticket) {
+    await db.update(Ticket, { id: ticket.id }).set({
+      isEliminated: true,
+    });
+    
+    // Also remove from marketplace
+    try {
+      await db.update(Listing, { id: ticket.id }).set({ 
+          isActive: false,
+          isCancelled: true 
+      });
+    } catch (e) {}
+  }
 });
 
 ponder.on("BattleHook:WinnerDeclared", async ({ event, context }) => {
   const { db } = context;
-  const { tokenId, prize } = event.args;
+  const { roundId, winner, prize } = event.args;
 
-  await db.update(Ticket, { id: tokenId.toString() }).set({
-    isWinner: true,
-    prize: prize,
-  });
-
-  const ticket = await db.find(Ticket, { id: tokenId.toString() });
+  // Find ticket for this player in this round
+  const tickets = await db.find(Ticket, { limit: 1000 });
+  const ticket = tickets.items.find(t => t.ownerId.toLowerCase() === winner.toLowerCase() && t.roundId === roundId.toString());
 
   if (ticket) {
+      // Update Round
+      await db.update(Round, { id: roundId.toString() }).set({
+        winnerId: ticket.id,
+        prize: prize,
+        status: "Ended",
+        endTime: event.block.timestamp,
+      });
+
+      // Update Winner Ticket
+      await db.update(Ticket, { id: ticket.id }).set({
+        isWinner: true,
+        prize: prize,
+      });
+
+      // Update User Winnings
       await db.update(User, { id: ticket.ownerId }).set((row) => ({
           totalWinnings: row.totalWinnings + prize
       }));
   }
+
+  // Marketplace Cleanup: Eliminate all losers in this round
+  // We already fetched tickets, so we can reuse the list or fetch again if needed.
+  // For simplicity and correctness (in case of pagination), we'll use the existing logic but adapted.
+  
+  const allTickets = await db.find(Ticket, { 
+      limit: 1000 
+  }); 
+  
+  for (const t of allTickets.items) {
+      if (t.roundId === roundId.toString() && (!ticket || t.id !== ticket.id)) {
+          await db.update(Ticket, { id: t.id }).set({ isEliminated: true });
+          
+          // Remove from marketplace
+          try {
+            await db.update(Listing, { id: t.id }).set({ 
+                isActive: false,
+                isCancelled: true 
+            });
+          } catch (e) {}
+      }
+  }
 });
+
+// --- Governance ---
 
 ponder.on("POLStaking:Staked", async ({ event, context }) => {
   const { db } = context;

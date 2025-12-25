@@ -18,15 +18,21 @@ export const Ticket = onchainTable("ticket", (t) => ({
   assets: t.bigint().notNull(),
   mintTime: t.bigint().notNull(),
   isDead: t.boolean().notNull(),
+  isEliminated: t.boolean().notNull().default(false),
   isWinner: t.boolean().notNull(),
   prize: t.bigint().notNull(),
   multiplier: t.integer().notNull(),
+  roundId: t.text(),
 }));
 
 export const TicketRelations = relations(Ticket, ({ one }) => ({
   owner: one(User, {
     fields: [Ticket.ownerId],
     references: [User.id],
+  }),
+  round: one(Round, {
+    fields: [Ticket.roundId],
+    references: [Round.id],
   }),
 }));
 
@@ -50,18 +56,24 @@ export const DrawRelations = relations(Draw, ({ one }) => ({
   }),
 }));
 
-export const Battle = onchainTable("battle", (t) => ({
-  id: t.text().primaryKey(), // Game ID
+export const Round = onchainTable("round", (t) => ({
+  id: t.text().primaryKey(), // Round ID
   startTime: t.bigint().notNull(),
-  winnerTokenId: t.text(),
+  endTime: t.bigint(),
+  winnerId: t.text(),
   prize: t.bigint().notNull(),
+  radius: t.bigint().notNull(),
+  x: t.bigint().notNull(),
+  y: t.bigint().notNull(),
+  status: t.text().notNull(), // Active, Ended
 }));
 
-export const BattleRelations = relations(Battle, ({ one }) => ({
-  winnerToken: one(Ticket, {
-    fields: [Battle.winnerTokenId],
+export const RoundRelations = relations(Round, ({ one, many }) => ({
+  winner: one(Ticket, {
+    fields: [Round.winnerId],
     references: [Ticket.id],
   }),
+  tickets: many(Ticket),
 }));
 
 export const Treasury = onchainTable("treasury", (t) => ({
