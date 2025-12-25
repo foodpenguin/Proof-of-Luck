@@ -74,7 +74,7 @@
 
 ---
 
-## 🛠 技術棧 (Tech Stack)
+## 技術棧 (Tech Stack)
 
 - **Smart Contracts**：Solidity ^0.8.30, Foundry（Forge / Cast / Anvil）
 - **Indexer**：Ponder（TypeScript）
