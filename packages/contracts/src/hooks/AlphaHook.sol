@@ -239,6 +239,7 @@ contract AlphaHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
             }
 
             nftWeight[winnerId] = 100;
+            MasterVault(vault).updateTicketMultiplier(winnerId, 100); // Sync
             emit DrawCompleted(currentDrawId, winnerId, randomWord);
         }
         
@@ -250,6 +251,7 @@ contract AlphaHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
             uint256 tid = activeTickets[idx];
             if (tid != winnerId) {
                 nftWeight[tid] += 5;
+                MasterVault(vault).updateTicketMultiplier(tid, uint16(nftWeight[tid])); // Sync
                 emit TicketEvolved(tid, nftWeight[tid]);
             }
         }

@@ -30,17 +30,20 @@ const Coordinates = styled.div`
 
 interface BattleMapProps {
   onSelect?: (x: number, y: number) => void;
+  radius?: number;
+  centerX?: number;
+  centerY?: number;
 }
 
-export const BattleMap = ({ onSelect }: BattleMapProps) => {
+export const BattleMap = ({ onSelect, radius = 500, centerX = 500, centerY = 500 }: BattleMapProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [selected, setSelected] = useState<{x: number, y: number} | null>(null);
   const [hover, setHover] = useState<{x: number, y: number} | null>(null);
 
   // Game Constants
   const MAP_SIZE = 1000;
-  const SAFE_RADIUS = 500; // Initial radius
-  const CENTER = MAP_SIZE / 2;
+  // const SAFE_RADIUS = 500; // Initial radius - Removed in favor of prop
+  // const CENTER = MAP_SIZE / 2; - Removed in favor of prop
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -69,7 +72,7 @@ export const BattleMap = ({ onSelect }: BattleMapProps) => {
 
     // Draw Safe Zone (Circle)
     ctx.beginPath();
-    ctx.arc(CENTER, CENTER, SAFE_RADIUS, 0, Math.PI * 2);
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#00ff00'; // Green
     ctx.lineWidth = 4;
     ctx.stroke();

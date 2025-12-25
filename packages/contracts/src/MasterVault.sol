@@ -219,6 +219,19 @@ contract MasterVault is ERC721, ERC2981, ReentrancyGuard, Ownable {
     }
 
     /**
+     * @notice 更新票券的倍數 (Multiplier)。
+     * @dev 僅限 Hook 呼叫。
+     */
+    function updateTicketMultiplier(uint256 tokenId, uint16 newMultiplier) external {
+        TicketData storage ticket = tickets[tokenId];
+        require(!ticket.isDead, "Ticket is dead");
+        address hook = modeHooks[ticket.mode];
+        require(msg.sender == hook, "Only hook");
+        
+        ticket.multiplier = newMultiplier;
+    }
+
+    /**
      * @notice 將收益分發給特定票券（再投資）。
      */
     function distributeYieldToTicket(uint256 tokenId) external {
