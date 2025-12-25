@@ -230,7 +230,7 @@ export default function GovernancePage() {
         }
       }
     }
-  `);
+  `, {}, { refetchInterval: 2000 });
 
   const { data: stakedBalance } = useReadContract({
     address: CONTRACTS.POLStaking.address as `0x${string}`,

@@ -3,12 +3,12 @@
 import styled from 'styled-components';
 import { BattleMap } from '../../components/BattleMap';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useReadContracts, useBalance, useBlock } from 'wagmi';
-import { parseAbi, encodeAbiParameters, parseUnits, formatUnits, erc20Abi, maxUint256, createWalletClient, http } from 'viem';
+import { parseAbi, encodeAbiParameters, parseUnits, formatUnits, erc20Abi, maxUint256, createWalletClient, http, publicActions } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { foundry } from 'viem/chains';
 import { CONTRACTS } from '../../utils/contracts';
 import { POPULAR_TOKENS } from '../../utils/tokenList';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { usePonderQuery } from '../../hooks/usePonder';
 import { gql } from '../../utils/ponder';
 
@@ -328,7 +328,7 @@ const adminClient = createWalletClient({
     account: adminAccount, 
     chain: foundry, 
     transport: http() 
-});
+}).extend(publicActions);
 
 const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onRefresh: () => void }) => {
     const [loading, setLoading] = useState(false);
@@ -375,6 +375,8 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
         setLoading(false);
     };
 
+    const lastFulfilledRequestId = useRef<bigint>(-1n);
+
     const checkAndFulfillVRF = async () => {
         log(`Checking VRF requests...`);
         try {
@@ -386,6 +388,11 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
             
             if (nextId > 0n) {
                 const requestId = nextId - 1n;
+                
+                if (requestId <= lastFulfilledRequestId.current) {
+                    return;
+                }
+
                 log(`Fulfilling VRF Request #${requestId}...`);
                 
                 const randomWords = [
@@ -393,14 +400,24 @@ const AdminControls = ({ onLog, onRefresh }: { onLog: (msg: string) => void, onR
                     BigInt(Math.floor(Math.random() * 1e18))
                 ];
 
-                const hash = await adminClient.writeContract({
-                    address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
-                    abi: VRF_COORDINATOR_MOCK_ABI,
-                    functionName: 'fulfillRandomWords',
-                    args: [requestId, randomWords]
-                });
-                log(`VRF Fulfilled: ${hash}`);
-                await adminClient.request({ method: 'evm_mine' });
+                try {
+                    const hash = await adminClient.writeContract({
+                        address: VRF_COORDINATOR_MOCK_ADDRESS as `0x${string}`,
+                        abi: VRF_COORDINATOR_MOCK_ABI,
+                        functionName: 'fulfillRandomWords',
+                        args: [requestId, randomWords]
+                    });
+                    log(`VRF Fulfilled: ${hash}`);
+                    await adminClient.request({ method: 'evm_mine' });
+                    lastFulfilledRequestId.current = requestId;
+                } catch (e: any) {
+                    if (e.message && (e.message.includes("Invalid request") || e.message.includes("reverted"))) {
+                        log(`VRF Request #${requestId} already fulfilled or invalid.`);
+                        lastFulfilledRequestId.current = requestId;
+                    } else {
+                        throw e;
+                    }
+                }
             } else {
                 log(`No pending VRF requests found (nextId=0).`);
             }
@@ -1240,7 +1257,7 @@ export default function LottoPage() {
               </StatBox>
               <StatBox>
                 <StatLabel>ZONE CENTER</StatLabel>
-                <StatValue>(500, 500)</StatValue>
+                <StatValue>({battleCenterX ? battleCenterX.toString() : '500'}, {battleCenterY ? battleCenterY.toString() : '500'})</StatValue>
               </StatBox>
               <StatBox>
                 <StatLabel>ZONE RADIUS</StatLabel>
@@ -1249,7 +1266,10 @@ export default function LottoPage() {
             </StatsGrid>
             <ActionArea>
               <JoinButton 
-                onClick={() => setShowMapModal(true)}
+                onClick={() => {
+                    if (isZap) setIsZap(false);
+                    setShowMapModal(true);
+                }}
                 disabled={isPending || isConfirming}
               >
                 {isPending ? 'CONFIRMING...' : 

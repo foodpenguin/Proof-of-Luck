@@ -147,7 +147,7 @@ export default function NFTPage() {
         }
       }
     }
-  `);
+  `, {}, { refetchInterval: 2000 });
 
   const { data: userData, isLoading: isUserLoading } = usePonderQuery(['user-tickets', address || ''], gql`
     query GetUserTickets($ownerId: String!) {
@@ -159,7 +159,7 @@ export default function NFTPage() {
         }
       }
     }
-  `, { ownerId: address ? address.toLowerCase() : '' }, { enabled: !!address });
+  `, { ownerId: address ? address.toLowerCase() : '' }, { enabled: !!address, refetchInterval: 2000 });
 
   const { writeContract, isPending, data: txHash } = useWriteContract();
 

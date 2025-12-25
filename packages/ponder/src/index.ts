@@ -1,5 +1,6 @@
 import { ponder } from "@/generated";
 import { User, Ticket, Pool, Draw, Round, Treasury, Proposal, Vote, Listing } from "../ponder.schema";
+import { desc } from "@ponder/core";
 
 ponder.on("MasterVault:Deposit", async ({ event, context }) => {
   const { db } = context;
@@ -19,9 +20,16 @@ ponder.on("MasterVault:Deposit", async ({ event, context }) => {
   let roundId = null;
   if (mode === 2) {
       // Find the latest active round
-      const rounds = await db.find(Round, { limit: 1, orderBy: { startTime: "desc" } });
-      if (rounds.items.length > 0 && rounds.items[0].status === "Active") {
-          roundId = rounds.items[0].id;
+      // Fallback to simple find and sort in memory to avoid API issues
+      const rounds = await db.find(Round, { limit: 50 });
+      if (rounds && rounds.items) {
+          const activeRound = rounds.items
+              .sort((a, b) => Number(b.startTime - a.startTime))
+              .find(r => r.status === "Active");
+          
+          if (activeRound) {
+              roundId = activeRound.id;
+          }
       }
   }
 
