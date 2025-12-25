@@ -8,8 +8,7 @@ import {IVRFCoordinator} from "../interfaces/IVRFCoordinator.sol";
 
 /**
  * @title BattleHook
- * @notice Battle Royale Logic Hook (Round-Based).
- * @dev Supports infinite replayability via Rounds (Epochs).
+ * @notice Battle Royale Logic Hook (Round-Based) with Join/Battle Phases.
  */
 contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     address public immutable vault;
@@ -18,46 +17,57 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     IVRFCoordinator public vrfCoordinator;
     bytes32 public keyHash;
     uint64 public subscriptionId;
-    uint32 public callbackGasLimit = 2500000;
+    uint32 public callbackGasLimit = 2500000; // Increased gas limit for complex logic
     uint16 public requestConfirmations = 3;
 
     // Game Constants
     uint256 public constant MAP_SIZE = 1000;
     uint256 public constant INITIAL_RADIUS = 500;
     uint256 public constant TICKET_PRICE = 100 * 1e6; // 100 USDC
-    uint256 public constant PENALTY_BASIS_POINTS = 1000; // 10% (1000/10000)
-    uint256 public constant SHRINK_INTERVAL = 84 hours;
+    uint256 public constant PENALTY_BASIS_POINTS = 1000; // 10% penalty for early exit
+    
+    // (2) 報名時間與縮圈間隔設定
+    uint256 public constant JOIN_DURATION = 1 days; 
+    uint256 public constant SHRINK_INTERVAL = 1 days;
+
+    // 遊戲狀態機
+    enum GameState {
+        Inactive, // 0: 回合尚未開始或已結束
+        Joining,  // 1: 開放報名中，等待正式開戰
+        Battling  // 2: 戰鬥進行中，已鎖定參賽者，新加入者排隊至下一輪
+    }
+
+    struct RoundInfo {
+        uint256 startTime;      // startNewRound 的時間
+        uint256 joinDeadline;   // 報名截止時間 (預計開始戰鬥時間)
+        uint256 lastActionTime; // 上一次縮圈或開始的時間
+        uint256 currentCenterX;
+        uint256 currentCenterY;
+        uint256 currentRadius;
+        GameState state;        // 當前狀態
+        uint256 winnerId;
+    }
 
     struct TicketData {
         uint256 x;
         uint256 y;
         bool isEliminated;
         bool exists;
-        uint256 roundId; // Track which round this ticket belongs to
-    }
-
-    struct RoundInfo {
-        uint256 startTime;
-        uint256 endTime;
-        uint256 currentCenterX;
-        uint256 currentCenterY;
-        uint256 currentRadius;
-        bool isActive;
-        uint256 winnerId;
+        uint256 roundId; // 這張票屬於哪一回合
     }
 
     // State
     uint256 public currentRoundId;
-    uint256 public lastShrinkTimestamp;
     mapping(uint256 => RoundInfo) public rounds;
     mapping(uint256 => TicketData) public ticketInfo;
     mapping(uint256 => uint256[]) public roundTickets; // roundId => ticketIds
 
-    // VRF State
-    uint8 public pendingAction; // 0=None, 1=Start, 2=Shrink
+    // VRF State: 0=None, 1=StartGame(InitCenter), 2=Shrink
+    uint8 public pendingAction; 
     
     // Events
-    event GameStarted(uint256 indexed roundId, uint256 startTime);
+    event GameRoundOpened(uint256 indexed roundId, uint256 joinDeadline);
+    event GameBattlingStarted(uint256 indexed roundId, uint256 startCenterX, uint256 startCenterY);
     event ZoneShrunk(uint256 indexed roundId, uint256 newX, uint256 newY, uint256 newRadius);
     event PlayerEliminated(uint256 indexed roundId, uint256 indexed tokenId);
     event WinnerDeclared(uint256 indexed roundId, uint256 indexed tokenId, uint256 prize);
@@ -78,7 +88,6 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         keyHash = _keyHash;
         subscriptionId = _subId;
         
-        // Initialize Round 0 (Dummy)
         currentRoundId = 0;
     }
 
@@ -95,40 +104,54 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     // --- Game Lifecycle ---
 
     /**
-     * @notice Start a new round.
-     * @dev Increments roundId, sets state to Active.
+     * @notice (1) 開始新回合：進入 Joining 狀態
+     * @dev 設定報名截止時間，等待玩家存款。
      */
     function startNewRound() external onlyOwner {
-        require(!rounds[currentRoundId].isActive, "Current round still active");
+        // 只有當前回合結束或未開始時才能開啟新回合
+        require(rounds[currentRoundId].state == GameState.Inactive || rounds[currentRoundId].winnerId != 0, "Current round active");
         require(pendingAction == 0, "Action pending");
         
         currentRoundId++;
+        RoundInfo storage round = rounds[currentRoundId];
         
-        rounds[currentRoundId].isActive = true;
-        rounds[currentRoundId].startTime = block.timestamp;
-        rounds[currentRoundId].currentRadius = INITIAL_RADIUS;
-        rounds[currentRoundId].currentCenterX = 500; // Default, will be randomized
-        rounds[currentRoundId].currentCenterY = 500; // Default, will be randomized
+        round.state = GameState.Joining;
+        round.startTime = block.timestamp;
+        round.joinDeadline = block.timestamp + JOIN_DURATION;
+        round.currentRadius = INITIAL_RADIUS;
+        // 初始圓心暫定 500 (中間)，直到正式開始才會隨機刷新
+        round.currentCenterX = 500;
+        round.currentCenterY = 500;
         
-        lastShrinkTimestamp = block.timestamp;
-
-        // Request initial random center
-        pendingAction = 1; // Start
-        _requestRandomness();
-        
-        emit GameStarted(currentRoundId, block.timestamp);
+        emit GameRoundOpened(currentRoundId, round.joinDeadline);
     }
 
     /**
-     * @notice Trigger zone shrink for the CURRENT round.
+     * @notice 觸發遊戲進程 (開始遊戲 或 縮圈)
+     * - 如果是 Joining -> 轉為 Battling (刷新圓心)
+     * - 如果是 Battling -> 縮圈
      */
     function performShrink() external onlyOwner {
-        require(rounds[currentRoundId].isActive, "Game not active");
-        require(pendingAction == 0, "Action pending");
-        require(rounds[currentRoundId].currentRadius > 0, "Already min radius");
-        
-        pendingAction = 2; // Shrink
-        _requestRandomness();
+        RoundInfo storage round = rounds[currentRoundId];
+        require(round.state != GameState.Inactive, "No active round");
+        require(pendingAction == 0, "VRF Action pending");
+
+        if (round.state == GameState.Joining) {
+            // (3) 正式開始遊戲
+            // 在開發測試時可以註解掉時間檢查，以便隨時開始
+            // require(block.timestamp >= round.joinDeadline, "Join period not over");
+            
+            pendingAction = 1; // 1 = Start Game (Init Center)
+            _requestRandomness();
+            
+        } else if (round.state == GameState.Battling) {
+            // (4) 縮圈
+            // require(block.timestamp >= round.lastActionTime + SHRINK_INTERVAL, "Too early to shrink");
+            require(round.currentRadius > 0, "Already min radius");
+
+            pendingAction = 2; // 2 = Shrink
+            _requestRandomness();
+        }
     }
 
     function _requestRandomness() internal {
@@ -149,26 +172,44 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 newY = randomWords[1] % MAP_SIZE;
         
         RoundInfo storage round = rounds[currentRoundId];
-        
-        round.currentCenterX = newX;
-        round.currentCenterY = newY;
+        round.lastActionTime = block.timestamp;
         
         if (pendingAction == 1) {
-            // Start Game: Reset radius
+            // (3) 遊戲正式開始：設定初始隨機圓心
+            round.state = GameState.Battling;
+            round.currentCenterX = newX;
+            round.currentCenterY = newY;
+            // 半徑保持初始值，或者你想要一開始就縮小也可以在這裡改
             round.currentRadius = INITIAL_RADIUS;
+            
+            emit GameBattlingStarted(currentRoundId, newX, newY);
+            
+            // 檢查是否有人運氣不好，一開始選的點就直接在圈外 (天譴?)
+            _checkForElimination(currentRoundId);
+
         } else if (pendingAction == 2) {
-            // Shrink: Halve radius
-            round.currentRadius = round.currentRadius / 2;
+            // (4) 縮圈
+            round.currentCenterX = newX;
+            round.currentCenterY = newY;
+            round.currentRadius = round.currentRadius / 2; // 半徑減半
+
+            emit ZoneShrunk(currentRoundId, newX, newY, round.currentRadius);
+            
+            // 執行淘汰檢查
+            _checkForElimination(currentRoundId);
         }
         
         pendingAction = 0;
-        emit ZoneShrunk(currentRoundId, round.currentCenterX, round.currentCenterY, round.currentRadius);
         
-        // Check for winner after shrink
+        // 檢查是否有贏家
         _checkForWinner(currentRoundId);
     }
 
     // --- Game Logic ---
+
+    function getRoundState(uint256 roundId) external view returns (uint8) {
+        return uint8(rounds[roundId].state);
+    }
 
     function getCurrentRadius() public view returns (uint256) {
         return rounds[currentRoundId].currentRadius;
@@ -183,19 +224,15 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     }
     
     function isGameActive() public view returns (bool) {
-        return rounds[currentRoundId].isActive;
+        return rounds[currentRoundId].state != GameState.Inactive;
     }
 
     function getDistanceSq(uint256 x1, uint256 y1, uint256 x2, uint256 y2) public pure returns (uint256) {
         uint256 dx = x1 > x2 ? x1 - x2 : x2 - x1;
         uint256 dy = y1 > y2 ? y1 - y2 : y2 - y1;
 
-        if (dx > MAP_SIZE / 2) {
-            dx = MAP_SIZE - dx;
-        }
-        if (dy > MAP_SIZE / 2) {
-            dy = MAP_SIZE - dy;
-        }
+        if (dx > MAP_SIZE / 2) dx = MAP_SIZE - dx;
+        if (dy > MAP_SIZE / 2) dy = MAP_SIZE - dy;
 
         return dx * dx + dy * dy;
     }
@@ -207,12 +244,8 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 roundId = ticketInfo[tokenId].roundId;
         RoundInfo storage round = rounds[roundId];
         
-        // If round is ended, use the final state (already captured in isEliminated or winner)
-        // But for dynamic checking during the game:
-        if (!round.isActive && round.endTime > 0) {
-             // Round ended, if not marked eliminated, they survived? 
-             // Actually, if round ended, winner is declared. Everyone else is eliminated.
-             return ticketInfo[tokenId].isEliminated;
+        if (round.state == GameState.Inactive && round.winnerId != 0 && round.winnerId != tokenId) {
+            return true; // Round ended and you are not the winner
         }
 
         uint256 radius = round.currentRadius;
@@ -221,28 +254,52 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         return distSq > radius * radius;
     }
 
+    // Chainlink Automation Interface
     function checkUpkeep(bytes calldata /* checkData */) external view returns (bool upkeepNeeded, bytes memory /* performData */) {
-        if (!rounds[currentRoundId].isActive) return (false, "");
-        if (pendingAction != 0) return (false, "");
-        if (rounds[currentRoundId].currentRadius == 0) return (false, "");
+        RoundInfo storage round = rounds[currentRoundId];
         
-        upkeepNeeded = (block.timestamp - lastShrinkTimestamp) > SHRINK_INTERVAL;
+        if (pendingAction != 0) return (false, "");
+        if (round.state == GameState.Inactive) return (false, "");
+        
+        // 如果是 Joining 且時間到了 -> 需要切換到 Battling
+        if (round.state == GameState.Joining) {
+            upkeepNeeded = block.timestamp >= round.joinDeadline;
+        } 
+        // 如果是 Battling 且時間到了 -> 需要縮圈
+        else if (round.state == GameState.Battling) {
+            if (round.currentRadius == 0) return (false, "");
+            upkeepNeeded = block.timestamp >= round.lastActionTime + SHRINK_INTERVAL;
+        }
     }
 
     function performUpkeep(bytes calldata /* performData */) external {
-        if (!rounds[currentRoundId].isActive) return;
-        if (pendingAction != 0) return;
-        if (rounds[currentRoundId].currentRadius == 0) return;
-        if ((block.timestamp - lastShrinkTimestamp) <= SHRINK_INTERVAL) return;
+        // 重用 performShrink 邏輯，但這裡可以加上更嚴格的時間檢查
+        // 為了簡單起見，直接呼叫 performShrink (它會再次檢查狀態)
+        this.performShrink(); 
+    }
 
-        lastShrinkTimestamp = block.timestamp;
-        pendingAction = 2; // Shrink
-        _requestRandomness();
+    function _checkForElimination(uint256 roundId) internal {
+        RoundInfo storage round = rounds[roundId];
+        uint256 radiusSq = round.currentRadius * round.currentRadius;
+        
+        uint256[] memory tickets = roundTickets[roundId];
+        for (uint256 i = 0; i < tickets.length; i++) {
+            uint256 tid = tickets[i];
+            // 只檢查尚未淘汰的
+            if (!ticketInfo[tid].isEliminated) {
+                uint256 distSq = getDistanceSq(ticketInfo[tid].x, ticketInfo[tid].y, round.currentCenterX, round.currentCenterY);
+                if (distSq > radiusSq) {
+                    ticketInfo[tid].isEliminated = true;
+                    emit PlayerEliminated(roundId, tid);
+                }
+            }
+        }
     }
 
     function _checkForWinner(uint256 roundId) internal {
         RoundInfo storage round = rounds[roundId];
-        if (!round.isActive) return;
+        // 如果還在 Joining 階段，不需要檢查贏家
+        if (round.state != GameState.Battling) return;
 
         uint256[] memory tickets = roundTickets[roundId];
         if (tickets.length == 0) return;
@@ -250,28 +307,20 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 survivorCount = 0;
         uint256 lastSurvivor = 0;
         
-        // Check survivors
         for (uint256 i = 0; i < tickets.length; i++) {
             uint256 tid = tickets[i];
             if (!ticketInfo[tid].isEliminated) {
-                // Re-check dynamic elimination
-                uint256 distSq = getDistanceSq(ticketInfo[tid].x, ticketInfo[tid].y, round.currentCenterX, round.currentCenterY);
-                if (distSq > round.currentRadius * round.currentRadius) {
-                    ticketInfo[tid].isEliminated = true;
-                    emit PlayerEliminated(roundId, tid);
-                } else {
-                    survivorCount++;
-                    lastSurvivor = tid;
-                }
+                survivorCount++;
+                lastSurvivor = tid;
             }
         }
 
         if (survivorCount == 1) {
             _declareWinner(roundId, lastSurvivor);
         } else if (round.currentRadius == 0 && survivorCount > 1) {
-            // Sudden Death: Closest to center
-            uint256 minDistSq = type(uint256).max;
+            // Sudden Death
             uint256 bestCandidate = 0;
+            uint256 minDistSq = type(uint256).max;
             
             for (uint256 i = 0; i < tickets.length; i++) {
                 uint256 tid = tickets[i];
@@ -285,19 +334,19 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
             }
             _declareWinner(roundId, bestCandidate);
         } else if (survivorCount == 0 && tickets.length > 0) {
-             // Everyone died? Should not happen if logic is correct, but just in case end round
-             round.isActive = false;
-             round.endTime = block.timestamp;
+             // 所有人同時死光？
+             round.state = GameState.Inactive;
+             round.startTime = 0; // End marker
         }
     }
 
     function _declareWinner(uint256 roundId, uint256 winnerId) internal {
         RoundInfo storage round = rounds[roundId];
         round.winnerId = winnerId;
-        round.isActive = false;
-        round.endTime = block.timestamp;
+        round.state = GameState.Inactive;
+        round.startTime = 0; // End marker if needed
         
-        // Mark all others as eliminated (if not already)
+        // 標記其他所有人為淘汰
         uint256[] memory tickets = roundTickets[roundId];
         for (uint256 i = 0; i < tickets.length; i++) {
             if (tickets[i] != winnerId) {
@@ -305,7 +354,7 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
             }
         }
         
-        emit WinnerDeclared(roundId, winnerId, 0); // Prize calculated at redeem
+        emit WinnerDeclared(roundId, winnerId, 0);
     }
 
     // --- IPOLHook Implementation ---
@@ -317,9 +366,10 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         bytes calldata data
     ) external view override onlyVault {
         require(assets == TICKET_PRICE, "Invalid ticket price");
-        require(rounds[currentRoundId].isActive, "Round not active");
+        // 只要不是 Inactive，都可以存款 (Joining 存入本局, Battling 存入下局)
+        require(rounds[currentRoundId].state != GameState.Inactive, "No active game");
         
-        require(data.length == 64, "Invalid data length"); // 2 * 32 bytes (x, y)
+        require(data.length == 64, "Invalid data length"); 
         (uint256 x, uint256 y) = abi.decode(data, (uint256, uint256));
         require(x < MAP_SIZE && y < MAP_SIZE, "Coordinates out of bounds");
     }
@@ -327,20 +377,28 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
     function afterDeposit(
         address /* caller */,
         uint256 /* assets */,
-        uint256 shares,
+        uint256 shares, // This is tokenId
         bytes calldata data
     ) external override onlyVault {
         (uint256 x, uint256 y) = abi.decode(data, (uint256, uint256));
+        
+        // (3) 決定這張票去哪裡
+        // 如果現在是 Joining，加入 currentRoundId
+        // 如果現在是 Battling，加入 currentRoundId + 1 (排隊下一局)
+        uint256 targetRoundId = currentRoundId;
+        if (rounds[currentRoundId].state == GameState.Battling) {
+            targetRoundId = currentRoundId + 1;
+        }
         
         ticketInfo[shares] = TicketData({
             x: x,
             y: y,
             isEliminated: false,
             exists: true,
-            roundId: currentRoundId
+            roundId: targetRoundId
         });
         
-        roundTickets[currentRoundId].push(shares);
+        roundTickets[targetRoundId].push(shares);
     }
 
     function onRedeemRequest(
@@ -348,9 +406,6 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 shares,
         bytes calldata /* data */
     ) external override onlyVault {
-        // Just cleanup if needed, but we keep history in roundTickets
-        // We can mark as not exists to prevent double logic if needed, 
-        // but ticket is burned by Vault anyway.
         ticketInfo[shares].exists = false;
     }
 
@@ -361,19 +416,18 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         uint256 roundId = ticketInfo[tokenId].roundId;
         RoundInfo storage round = rounds[roundId];
         
-        // If round is still active, and user is not eliminated, they are "Early Exiting"
-        if (round.isActive) {
+        // 如果回合還在進行中 (Joining 或 Battling)
+        if (round.state != GameState.Inactive) {
              if (checkElimination(tokenId)) {
-                 return principal; // Eliminated, get principal
+                 return principal; 
              } else {
                  // Early exit penalty
                  uint256 penalty = (principal * PENALTY_BASIS_POINTS) / 10000;
                  return principal - penalty;
              }
         } else {
-            // Round Ended
+            // 回合結束
             if (round.winnerId == tokenId) {
-                // Winner gets Principal + Yield (Yield is handled by Vault, here we return Principal)
                 return principal;
             } else {
                 return principal;
@@ -381,10 +435,6 @@ contract BattleHook is IPOLHook, Ownable, VRFConsumerBaseV2 {
         }
     }
 
-    /**
-     * @notice Check if a ticket is the winner of its round.
-     * @dev Used by MasterVault to determine if yield should be paid out.
-     */
     function isWinner(uint256 tokenId) external view returns (bool) {
         if (!ticketInfo[tokenId].exists) return false;
         uint256 roundId = ticketInfo[tokenId].roundId;

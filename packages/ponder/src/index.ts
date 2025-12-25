@@ -1,132 +1,23 @@
 import { ponder } from "@/generated";
 import { User, Ticket, Pool, Draw, Round, Treasury, Proposal, Vote, Listing } from "../ponder.schema";
-import { desc } from "@ponder/core";
 import { MasterVaultABI } from "../abis/MasterVault";
-import fs from "fs"; // 引入檔案系統模組
+import fs from "fs";
 import { parseAbi } from "viem";
 
-// 清空舊的 log 檔案
-fs.writeFileSync("debug.log", `--- Debug Start ${new Date().toISOString()} ---\n`);
-
-
-ponder.on("MasterVault:Deposit", async ({ event, context }) => {
-  const { db } = context;
-  const { caller, owner, assets, tokenId, mode } = event.args;
-
-  // Update User
-  await db.insert(User).values({
-    id: owner.toLowerCase(),
-    totalDeposited: assets,
-    totalWinnings: 0n,
-    stakedAmount: 0n,
-  }).onConflictDoUpdate((row) => ({
-    totalDeposited: row.totalDeposited + assets,
-  }));
-
-  // Determine Round ID for Battle Mode (Mode 2)
-  let roundId = null;
-  if (mode === 2) {
-      // Find the latest active round
-      // Fallback to simple find and sort in memory to avoid API issues
-      const rounds = await db.find(Round, { limit: 50 });
-      if (rounds && rounds.items) {
-          const activeRound = rounds.items
-              .sort((a, b) => Number(b.startTime - a.startTime))
-              .find(r => r.status === "Active");
-          
-          if (activeRound) {
-              roundId = activeRound.id;
-          }
-      }
-  }
-
-  // Create Ticket
-  await db.insert(Ticket).values({
-    id: tokenId.toString(),
-    ownerId: owner.toLowerCase(),
-    mode: Number(mode),
-    assets: assets,
-    mintTime: event.block.timestamp,
-    isDead: false,
-    isEliminated: false,
-    isWinner: false,
-    prize: 0n,
-    multiplier: 100,
-    roundId: roundId,
-  });
-
-  // Update Pool
-  await db.insert(Pool).values({
-    id: mode.toString(),
-    totalAssets: assets,
-    activeTicketsCount: 1,
-  }).onConflictDoUpdate((row) => ({
-    totalAssets: row.totalAssets + assets,
-    activeTicketsCount: row.activeTicketsCount + 1,
-  }));
-});
-
-ponder.on("MasterVault:RedeemClaim", async ({ event, context }) => {
-  const { db } = context;
-  const { tokenId, assets } = event.args;
-
-  const ticket = await db.find(Ticket, { id: tokenId.toString() });
-  if (!ticket) return;
-
-  // Mark Ticket as Dead
-  await db.update(Ticket, { id: tokenId.toString() }).set({ isDead: true });
-
-  // Cancel any active listing (Zombie Order Fix)
-  try {
-    await db.update(Listing, { id: tokenId.toString() }).set({ 
-        isActive: false,
-        isCancelled: true 
-    });
-  } catch (e) {
-    // Listing might not exist, ignore
-  }
-
-  // Update Pool
-  await db.update(Pool, { id: ticket.mode.toString() }).set((row) => ({
-    totalAssets: row.totalAssets - ticket.assets,
-    activeTicketsCount: row.activeTicketsCount - 1,
-  }));
-  
-  // If assets > ticket.assets, it's a win
-  if (assets > ticket.assets) {
-      const profit = assets - ticket.assets;
-      await db.update(User, { id: ticket.ownerId.toLowerCase() }).set((row) => ({
-          totalWinnings: row.totalWinnings + profit
-      }));
-  }
-});
-
-ponder.on("MasterVault:Transfer", async ({ event, context }) => {
-  const { db } = context;
-  const { from, to, tokenId } = event.args;
-
-  if (from === "0x0000000000000000000000000000000000000000") return; // Mint handled by Deposit
-  if (to === "0x0000000000000000000000000000000000000000") return; // Burn handled by RedeemClaim (keep owner for history)
-
-  // Ensure 'to' user exists
-  await db.insert(User).values({
-    id: to.toLowerCase(),
-    totalDeposited: 0n,
-    totalWinnings: 0n,
-    stakedAmount: 0n,
-  }).onConflictDoUpdate((row) => ({})); 
-
-  await db.update(Ticket, { id: tokenId.toString() }).set({ ownerId: to.toLowerCase() });
-});
-
-
-// 初始化 Debug Log
-fs.writeFileSync("debug.log", `--- 系統重啟 ${new Date().toLocaleString()} ---\n`);
+// --- 初始化 Debug Log ---
+if (!fs.existsSync("debug.log")) {
+    fs.writeFileSync("debug.log", `--- 系統重啟 ${new Date().toLocaleString()} ---\n`);
+}
 
 function logToFile(msg: string) {
   fs.appendFileSync("debug.log", `[${new Date().toLocaleTimeString()}] ${msg}\n`);
+  console.log(msg);
 }
 
+
+/**
+ * 從鏈上同步 Ticket 的最新狀態 (Assets & Multiplier)
+ */
 async function syncTicketFromChain(tokenId: string, isWinnerUpdate: boolean, context: any) {
   const { db, client } = context;
   const vaultAddress = process.env.PONDER_MASTER_VAULT_ADDRESS as `0x${string}`;
@@ -134,7 +25,6 @@ async function syncTicketFromChain(tokenId: string, isWinnerUpdate: boolean, con
   try {
     const data = await client.readContract({
       address: vaultAddress,
-      // 2. 使用 parseAbi 包裝字串陣列
       abi: parseAbi([
         "function tickets(uint256) view returns (uint128 assets, uint40 mintTime, uint16 multiplier, uint8 mode, bool isDead, uint16 x, uint16 y, uint24 extra)"
       ]),
@@ -142,7 +32,6 @@ async function syncTicketFromChain(tokenId: string, isWinnerUpdate: boolean, con
       args: [BigInt(tokenId)],
     }) as any;
 
-    // Viem parseAbi 後，data 會是一個陣列 [assets, mintTime, multiplier, ...]
     const assets = BigInt(data[0]);
     const multiplier = Number(data[2]);
 
@@ -160,15 +49,16 @@ async function syncTicketFromChain(tokenId: string, isWinnerUpdate: boolean, con
     return null;
   }
 }
+
 /**
- * 處理開獎事件 - 修正參數結構
+ * 處理 Alpha/Savings 開獎事件
  */
 async function handleDrawCompleted({ event, context }: any) {
   const { db } = context;
   const { winnerTokenId, drawId } = event.args;
   const tid = winnerTokenId.toString();
 
-  logToFile(`\n 開獎事件: Draw #${drawId}, Winner: #${tid}`);
+  logToFile(`\n開獎事件: Draw #${drawId}, Winner: #${tid}`);
 
   const finalAssets = await syncTicketFromChain(tid, true, context);
 
@@ -183,42 +73,159 @@ async function handleDrawCompleted({ event, context }: any) {
 }
 
 /**
- * 處理權重演化事件 - 修正參數結構
+ * 處理 Alpha/Savings 權重演化事件
  */
 async function handleTicketEvolved({ event, context }: any) {
   const { tokenId, newWeight } = event.args;
-  logToFile(` 演化事件: Ticket #${tokenId} 權重變更為 ${newWeight}`);
-  
+  logToFile(`演化事件: Ticket #${tokenId} 權重變更為 ${newWeight}`);
   await syncTicketFromChain(tokenId.toString(), false, context);
 }
 
-// 註冊事件監聽
+// --- 1. MasterVault 核心事件 ---
+
+ponder.on("MasterVault:Deposit", async ({ event, context }) => {
+  const { db } = context;
+  const { caller, owner, assets, tokenId, mode } = event.args;
+
+  await db.insert(User).values({
+    id: owner.toLowerCase(),
+    totalDeposited: assets,
+    totalWinnings: 0n,
+    stakedAmount: 0n,
+  }).onConflictDoUpdate((row) => ({
+    totalDeposited: row.totalDeposited + assets,
+  }));
+
+  // Battle Mode (2) 需要關聯 Round
+ let roundId = null;
+  if (Number(mode) === 2) {
+      const rounds = await db.find(Round, { limit: 10, orderBy: { startTime: "desc" } });
+      
+      // FIX: 加入安全檢查，避免資料庫為空時報錯
+      if (rounds && rounds.items) {
+          const activeRound = rounds.items.find(r => r.status === "Active" || r.status === "Joining" || r.status === "Battling");
+          if (activeRound) {
+              roundId = activeRound.id;
+          }
+      }
+  }
+
+  await db.insert(Ticket).values({
+    id: tokenId.toString(),
+    ownerId: owner.toLowerCase(),
+    mode: Number(mode),
+    assets: assets,
+    mintTime: event.block.timestamp,
+    isDead: false,
+    isEliminated: false,
+    isWinner: false,
+    prize: 0n,
+    multiplier: 100,
+    roundId: roundId,
+  });
+
+  await db.insert(Pool).values({
+    id: mode.toString(),
+    totalAssets: assets,
+    activeTicketsCount: 1,
+  }).onConflictDoUpdate((row) => ({
+    totalAssets: row.totalAssets + assets,
+    activeTicketsCount: row.activeTicketsCount + 1,
+  }));
+});
+
+ponder.on("MasterVault:RedeemClaim", async ({ event, context }) => {
+  const { db } = context;
+  const { tokenId, assets } = event.args;
+
+  const ticket = await db.find(Ticket, { id: tokenId.toString() });
+  if (!ticket) return;
+
+  await db.update(Ticket, { id: tokenId.toString() }).set({ isDead: true });
+
+  try {
+    await db.update(Listing, { id: tokenId.toString() }).set({ 
+        isActive: false,
+        isCancelled: true 
+    });
+  } catch (e) {}
+
+  await db.update(Pool, { id: ticket.mode.toString() }).set((row) => ({
+    totalAssets: row.totalAssets - ticket.assets,
+    activeTicketsCount: row.activeTicketsCount - 1,
+  }));
+  
+  if (assets > ticket.assets) {
+      const profit = assets - ticket.assets;
+      await db.update(User, { id: ticket.ownerId.toLowerCase() }).set((row) => ({
+          totalWinnings: row.totalWinnings + profit
+      }));
+  }
+});
+
+ponder.on("MasterVault:Transfer", async ({ event, context }) => {
+  const { db } = context;
+  const { from, to, tokenId } = event.args;
+
+  if (from === "0x0000000000000000000000000000000000000000") return;
+  if (to === "0x0000000000000000000000000000000000000000") return;
+
+  await db.insert(User).values({
+    id: to.toLowerCase(),
+    totalDeposited: 0n,
+    totalWinnings: 0n,
+    stakedAmount: 0n,
+  }).onConflictDoUpdate((row) => ({})); 
+
+  await db.update(Ticket, { id: tokenId.toString() }).set({ ownerId: to.toLowerCase() });
+});
+
+// --- 2. Alpha & Savings Hook 事件 ---
 ponder.on("AlphaHook:DrawCompleted", handleDrawCompleted);
 ponder.on("GeneralHook:DrawCompleted", handleDrawCompleted);
+ponder.on("AlphaHook:TicketEvolved", handleTicketEvolved);
+ponder.on("GeneralHook:TicketEvolved", handleTicketEvolved);
 
+// --- 3. Battle Hook 事件 (修正後) ---
 
-
-
-// --- Battle Hook Events ---
-
-ponder.on("BattleHook:GameStarted", async ({ event, context }) => {
+// 事件 1: 開放報名 (對應 startNewRound)
+ponder.on("BattleHook:GameRoundOpened", async ({ event, context }) => {
   const { db } = context;
-  const { roundId, startTime } = event.args;
+  const { roundId } = event.args;
+
+  logToFile(`Battle Round #${roundId} 開放報名 (Joining)`);
 
   await db.insert(Round).values({
     id: roundId.toString(),
-    startTime: startTime,
+    startTime: event.block.timestamp,
     prize: 0n,
-    radius: 500n, // Initial Radius
-    x: 500n, // Initial Center
-    y: 500n, // Initial Center
-    status: "Active",
+    radius: 500n,
+    x: 500n,
+    y: 500n,
+    status: "Joining",
   });
 });
 
+// 事件 2: 正式開戰 (對應 performShrink - Start)
+ponder.on("BattleHook:GameBattlingStarted", async ({ event, context }) => {
+  const { db } = context;
+  const { roundId, startCenterX, startCenterY } = event.args;
+
+  logToFile(`Battle Round #${roundId} 正式開戰！中心: (${startCenterX}, ${startCenterY})`);
+
+  await db.update(Round, { id: roundId.toString() }).set({
+    x: startCenterX,
+    y: startCenterY,
+    status: "Battling",
+  });
+});
+
+// 事件 3: 縮圈
 ponder.on("BattleHook:ZoneShrunk", async ({ event, context }) => {
   const { db } = context;
   const { roundId, newRadius, newX, newY } = event.args;
+
+  logToFile(`Battle Round #${roundId} 縮圈 -> R: ${newRadius}`);
 
   await db.update(Round, { id: roundId.toString() }).set({
     x: newX,
@@ -227,84 +234,67 @@ ponder.on("BattleHook:ZoneShrunk", async ({ event, context }) => {
   });
 });
 
+// 事件 4: 玩家淘汰
 ponder.on("BattleHook:PlayerEliminated", async ({ event, context }) => {
   const { db } = context;
-  const { roundId, player } = event.args;
+  const { roundId, tokenId } = event.args;
 
-  // Find ticket for this player in this round
-  // Note: This is inefficient if there are many tickets. 
-  // Ideally we should filter by roundId and ownerId in the DB query.
-  const tickets = await db.find(Ticket, { limit: 1000 });
-  const ticket = tickets.items.find(t => t.ownerId.toLowerCase() === player.toLowerCase() && t.roundId === roundId.toString());
+  logToFile(`Ticket #${tokenId} 在 Round #${roundId} 被淘汰`);
 
-  if (ticket) {
-    await db.update(Ticket, { id: ticket.id }).set({
-      isEliminated: true,
+  await db.update(Ticket, { id: tokenId.toString() }).set({
+    isEliminated: true,
+  });
+  
+  try {
+    await db.update(Listing, { id: tokenId.toString() }).set({ 
+        isActive: false,
+        isCancelled: true 
     });
-    
-    // Also remove from marketplace
-    try {
-      await db.update(Listing, { id: ticket.id }).set({ 
-          isActive: false,
-          isCancelled: true 
-      });
-    } catch (e) {}
-  }
+  } catch (e) {}
 });
 
+// 事件 5: 贏家誕生
 ponder.on("BattleHook:WinnerDeclared", async ({ event, context }) => {
   const { db } = context;
-  const { roundId, winner, prize } = event.args;
+  const { roundId, tokenId } = event.args;
+  const winnerId = tokenId.toString();
+  const rId = roundId.toString();
 
-  // Find ticket for this player in this round
-  const tickets = await db.find(Ticket, { limit: 1000 });
-  const ticket = tickets.items.find(t => t.ownerId.toLowerCase() === winner.toLowerCase() && t.roundId === roundId.toString());
+  logToFile(`Battle Round #${rId} 贏家誕生: Ticket #${winnerId}`);
 
-  if (ticket) {
-      // Update Round
-      await db.update(Round, { id: roundId.toString() }).set({
-        winnerId: ticket.id,
-        prize: prize,
-        status: "Ended",
-        endTime: event.block.timestamp,
-      });
+  // 1. 更新 Round 狀態
+  await db.update(Round, { id: rId }).set({
+    winnerId: winnerId,
+    status: "Ended",
+    endTime: event.block.timestamp,
+  });
 
-      // Update Winner Ticket
-      await db.update(Ticket, { id: ticket.id }).set({
-        isWinner: true,
-        prize: prize,
-      });
+  // 2. 更新贏家 Ticket
+  await db.update(Ticket, { id: winnerId }).set({
+    isWinner: true,
+    isEliminated: false,
+  });
 
-      // Update User Winnings
-      await db.update(User, { id: ticket.ownerId }).set((row) => ({
-          totalWinnings: row.totalWinnings + prize
-      }));
-  }
-
-  // Marketplace Cleanup: Eliminate all losers in this round
-  // We already fetched tickets, so we can reuse the list or fetch again if needed.
-  // For simplicity and correctness (in case of pagination), we'll use the existing logic but adapted.
+  // 3. 淘汰同回合其他輸家
+  const roundTickets = await db.find(Ticket, { limit: 1000 }); 
   
-  const allTickets = await db.find(Ticket, { 
-      limit: 1000 
-  }); 
-  
-  for (const t of allTickets.items) {
-      if (t.roundId === roundId.toString() && (!ticket || t.id !== ticket.id)) {
-          await db.update(Ticket, { id: t.id }).set({ isEliminated: true });
-          
-          // Remove from marketplace
-          try {
-            await db.update(Listing, { id: t.id }).set({ 
-                isActive: false,
-                isCancelled: true 
-            });
-          } catch (e) {}
+  // *** FIX: 這裡加入安全檢查，避免資料庫回傳 null 時崩潰 ***
+  if (roundTickets && roundTickets.items) {
+      for (const t of roundTickets.items) {
+        // 如果是這一回合的票，且不是贏家
+        if (t.roundId === rId && t.id !== winnerId) {
+            await db.update(Ticket, { id: t.id }).set({ isEliminated: true });
+            
+            // 取消市場掛單
+            try {
+                await db.update(Listing, { id: t.id }).set({ isActive: false, isCancelled: true });
+            } catch (e) {}
+        }
       }
   }
 });
 
-// --- Governance ---
+// --- 4. Governance 事件 ---
 
 ponder.on("POLStaking:Staked", async ({ event, context }) => {
   const { db } = context;
@@ -332,7 +322,6 @@ ponder.on("POLStaking:Unstaked", async ({ event, context }) => {
 ponder.on("POLToken:Transfer", async ({ event, context }) => {
     const { db } = context;
     const { to, value } = event.args;
-    
     const TREASURY_ADDRESS = "0x0000000000000000000000000000000000000000"; 
 
     if (to.toLowerCase() === TREASURY_ADDRESS.toLowerCase()) {
@@ -404,21 +393,56 @@ ponder.on("POLGovernor:ProposalExecuted", async ({ event, context }) => {
   await db.update(Proposal, { id: proposalId.toString() }).set({ status: "Executed" });
 });
 
-// 處理 AlphaHook 的權重更新
-ponder.on("AlphaHook:TicketEvolved", async ({ event, context }) => {
+// --- 5. TicketMarketplace 事件 ---
+
+ponder.on("TicketMarketplace:ItemListed", async ({ event, context }) => {
   const { db } = context;
-  const { tokenId, newWeight } = event.args;
-  await db.update(Ticket, { id: tokenId.toString() }).set({
-    multiplier: Number(newWeight),
+  const { seller, tokenId, price } = event.args;
+
+  await db.insert(Listing).values({
+    id: tokenId.toString(),
+    seller: seller.toLowerCase(),
+    tokenId: tokenId.toString(),
+    price: price,
+    isActive: true,
+    isSold: false,
+    isCancelled: false,
+  }).onConflictDoUpdate((row) => ({
+    seller: seller.toLowerCase(),
+    price: price,
+    isActive: true,
+    isSold: false,
+    isCancelled: false,
+  }));
+});
+
+ponder.on("TicketMarketplace:ItemCanceled", async ({ event, context }) => {
+  const { db } = context;
+  const { tokenId } = event.args;
+  
+  await db.update(Listing, { id: tokenId.toString() }).set({
+    isActive: false,
+    isCancelled: true,
   });
 });
 
-// 處理 GeneralHook (Savings) 的權重更新
-ponder.on("GeneralHook:TicketEvolved", async ({ event, context }) => {
+ponder.on("TicketMarketplace:ItemBought", async ({ event, context }) => {
   const { db } = context;
-  const { tokenId, newWeight } = event.args;
-  await db.update(Ticket, { id: tokenId.toString() }).set({
-    multiplier: Number(newWeight),
+  const { tokenId, buyer } = event.args;
+  
+  await db.update(Listing, { id: tokenId.toString() }).set({
+    isActive: false,
+    isSold: true,
   });
-});
 
+  await db.update(Ticket, { id: tokenId.toString() }).set({
+    ownerId: buyer.toLowerCase(),
+  });
+
+  await db.insert(User).values({
+    id: buyer.toLowerCase(),
+    totalDeposited: 0n,
+    totalWinnings: 0n,
+    stakedAmount: 0n,
+  }).onConflictDoUpdate((row) => ({}));
+});
