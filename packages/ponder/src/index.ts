@@ -68,7 +68,10 @@ async function handleDrawCompleted({ event, context }: any) {
       timestamp: event.block.timestamp,
       winnerTokenId: tid,
       prize: finalAssets,
-    });
+    }).onConflictDoUpdate((row) => ({
+      prize: finalAssets,
+      winnerTokenId: tid,
+    }));
   }
 }
 

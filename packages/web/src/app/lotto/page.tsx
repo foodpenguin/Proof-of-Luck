@@ -327,11 +327,23 @@ const TokenSelect = styled.select`
 
 // --- Admin Bot ---
 
+const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
+
+const azureAnvil = {
+  id: 31337,
+  name: 'Azure Anvil',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: {
+    default: { http: [rpcUrl] },
+    public: { http: [rpcUrl] },
+  },
+} as const;
+
 const ADMIN_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const adminAccount = privateKeyToAccount(ADMIN_KEY);
 const adminClient = createWalletClient({ 
     account: adminAccount, 
-    chain: foundry, 
+    chain: azureAnvil, 
     transport: http() 
 }).extend(publicActions);
 
