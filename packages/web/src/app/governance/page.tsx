@@ -217,7 +217,7 @@ export default function GovernancePage() {
   const [step, setStep] = useState<'idle' | 'approving' | 'staking'>('idle');
   const [approveTxHash, setApproveTxHash] = useState<`0x${string}` | undefined>(undefined);
   
-  const { data: proposalsData, isLoading: isProposalsLoading } = usePonderQuery(['governance-proposals'], gql`
+  const { data: proposalsData, isLoading: isProposalsLoading, refetch: refetchProposals } = usePonderQuery(['governance-proposals'], gql`
     query GetProposals {
       proposals(orderBy: "startBlock", orderDirection: "desc") {
         items {
@@ -232,21 +232,21 @@ export default function GovernancePage() {
     }
   `, {}, { refetchInterval: 2000 });
 
-  const { data: stakedBalance } = useReadContract({
+  const { data: stakedBalance, refetch: refetchStaked } = useReadContract({
     address: CONTRACTS.POLStaking.address as `0x${string}`,
     abi: STAKING_ABI,
     functionName: 'balanceOf',
     args: [address || '0x0000000000000000000000000000000000000000']
   });
 
-  const { data: votingPower } = useReadContract({
+  const { data: votingPower, refetch: refetchVotes } = useReadContract({
     address: CONTRACTS.POLStaking.address as `0x${string}`,
     abi: STAKING_ABI,
     functionName: 'getVotes',
     args: [address || '0x0000000000000000000000000000000000000000']
   });
 
-  const { data: polBalance } = useReadContract({
+  const { data: polBalance, refetch: refetchPol } = useReadContract({
     address: CONTRACTS.POLToken.address as `0x${string}`,
     abi: ERC20_ABI,
     functionName: 'balanceOf',
@@ -262,6 +262,16 @@ export default function GovernancePage() {
   const { isLoading: isStaking, isSuccess: isStaked } = useWaitForTransactionReceipt({
     hash: txHash,
   });
+
+  // Auto-refresh on transaction success
+  useEffect(() => {
+    if (isStaked || isApproved) {
+        refetchStaked();
+        refetchVotes();
+        refetchPol();
+        refetchProposals();
+    }
+  }, [isStaked, isApproved, refetchStaked, refetchVotes, refetchPol, refetchProposals]);
 
   useEffect(() => {
     if (isApproved && step === 'approving') {

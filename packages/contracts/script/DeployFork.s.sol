@@ -342,7 +342,7 @@ contract DeployFork is Script {
             "# Ponder\n",
             "# DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/ponder\n\n",
             "# Network\n",
-            "PONDER_RPC_URL_31337=http://127.0.0.1:8545\n\n",
+            // "PONDER_RPC_URL_31337=http://127.0.0.1:8545\n\n",
             "# Contract Addresses\n",
             "PONDER_POL_TOKEN_ADDRESS=", vm.toString(address(polToken)), "\n",
             "PONDER_POL_TIMELOCK_ADDRESS=", vm.toString(address(timelock)), "\n",

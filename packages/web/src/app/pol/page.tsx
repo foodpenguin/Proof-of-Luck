@@ -2,60 +2,54 @@
 
 import styled from 'styled-components';
 import { useState, useEffect } from 'react';
-import { useAccount, useWriteContract, useBalance, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useWriteContract, useBalance, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
 import { parseAbi, formatUnits, parseUnits } from 'viem';
 import { CONTRACTS } from '../../utils/contracts';
 
 const PageLayout = styled.div`
   display: flex;
   flex-direction: column;
+  align-items: center;
   padding: 2rem;
   gap: 2rem;
   min-height: 100vh;
   background-color: ${({ theme }) => theme.colors.background};
-
-  @media (min-width: ${({ theme }) => theme.breakpoints.desktop}) {
-    flex-direction: row;
-    align-items: flex-start;
-    justify-content: center;
-  }
 `;
 
-const ChartSection = styled.div`
-  flex: 2;
+const Container = styled.div`
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+`;
+
+const PriceCard = styled.div`
   background-color: ${({ theme }) => theme.colors.white};
   border: 3px solid ${({ theme }) => theme.colors.black};
   padding: 1.5rem;
-  box-shadow: ${({ theme }) => theme.shadows.card};
-  min-height: 400px;
-  display: flex;
-  flex-direction: column;
-`;
-
-const ChartHeader = styled.div`
+  box-shadow: 4px 4px 0px 0px ${({ theme }) => theme.colors.black};
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1rem;
-  border-bottom: 2px solid ${({ theme }) => theme.colors.black};
-  padding-bottom: 1rem;
 `;
 
 const TokenInfo = styled.div`
   h2 {
-    font-size: 2rem;
+    font-size: 1.5rem;
     margin: 0;
   }
   span {
     font-family: ${({ theme }) => theme.fonts.mono};
     color: #666;
+    font-size: 0.9rem;
   }
 `;
 
 const PriceInfo = styled.div`
   text-align: right;
   h3 {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
     margin: 0;
     font-family: ${({ theme }) => theme.fonts.mono};
   }
@@ -63,36 +57,6 @@ const PriceInfo = styled.div`
     color: #00cc00;
     font-weight: bold;
   }
-`;
-
-const MockChart = styled.div`
-  flex: 1;
-  background: repeating-linear-gradient(
-    45deg,
-    #f0f0f0,
-    #f0f0f0 10px,
-    #ffffff 10px,
-    #ffffff 20px
-  );
-  border: 1px dashed ${({ theme }) => theme.colors.black};
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-
-  &::after {
-    content: "CHART VISUALIZATION";
-    font-family: ${({ theme }) => theme.fonts.mono};
-    color: #999;
-    font-size: 1.5rem;
-  }
-`;
-
-const SwapSection = styled.div`
-  flex: 1;
-  max-width: 480px;
-  width: 100%;
 `;
 
 const SwapCard = styled.div`
@@ -179,7 +143,7 @@ const PercentBtn = styled.button`
 const SwapIcon = styled.div`
   display: flex;
   justify-content: center;
-  margin: -1rem 0;
+  margin: 0.5rem 0;
   position: relative;
   z-index: 1;
   
@@ -238,6 +202,11 @@ const SWAP_ROUTER_ABI = parseAbi([
   'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) external payable returns (uint256 amountOut)'
 ]);
 
+const QUOTER_ABI = parseAbi([
+    'struct QuoteExactInputSingleParams { address tokenIn; address tokenOut; uint256 amountIn; uint24 fee; uint160 sqrtPriceLimitX96; }',
+    'function quoteExactInputSingle(QuoteExactInputSingleParams params) external returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)'
+]);
+
 const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 amount) external returns (bool)'
 ]);
@@ -251,17 +220,63 @@ export default function PolPage() {
 
   const tokenIn = isBuying ? CONTRACTS.USDC : CONTRACTS.POLToken;
   const tokenOut = isBuying ? CONTRACTS.POLToken : CONTRACTS.USDC;
-  const decimalsIn = isBuying ? 6 : 18; // USDC 6, POL 18 (assumed)
+  const decimalsIn = isBuying ? 6 : 18; // USDC 6, POL 18
+  const decimalsOut = isBuying ? 18 : 6;
+
+  const formatDisplay = (val: string | undefined) => {
+    if (!val) return '0.0';
+    const [int, dec] = val.split('.');
+    return dec ? `${int}.${dec.substring(0, 6)}` : int;
+  };
 
   const { data: balanceIn } = useBalance({
     address,
     token: tokenIn.address as `0x${string}`,
+    query: { refetchInterval: 5000 }
   });
 
   const { data: balanceOut } = useBalance({
     address,
     token: tokenOut.address as `0x${string}`,
+    query: { refetchInterval: 5000 }
   });
+
+  // --- Price Fetching ---
+  const { data: priceQuote } = useReadContract({
+    address: CONTRACTS.QuoterV2.address as `0x${string}`,
+    abi: QUOTER_ABI,
+    functionName: 'quoteExactInputSingle',
+    args: [{
+        tokenIn: CONTRACTS.POLToken.address as `0x${string}`,
+        tokenOut: CONTRACTS.USDC.address as `0x${string}`,
+        amountIn: parseUnits('1', 18),
+        fee: 3000,
+        sqrtPriceLimitX96: 0n
+    }],
+    query: { refetchInterval: 10000 }
+  });
+
+  const currentPrice = priceQuote ? Number(formatUnits((priceQuote as any)[0], 6)) : 1.0;
+
+  // --- Quote Fetching ---
+  const { data: swapQuote, isLoading: isQuoting } = useReadContract({
+    address: CONTRACTS.QuoterV2.address as `0x${string}`,
+    abi: QUOTER_ABI,
+    functionName: 'quoteExactInputSingle',
+    args: [{
+        tokenIn: tokenIn.address as `0x${string}`,
+        tokenOut: tokenOut.address as `0x${string}`,
+        amountIn: amountIn ? parseUnits(amountIn, decimalsIn) : 0n,
+        fee: 3000,
+        sqrtPriceLimitX96: 0n
+    }],
+    query: { 
+        enabled: !!amountIn && Number(amountIn) > 0,
+        refetchInterval: 5000 
+    }
+  });
+
+  const estimatedOut = swapQuote ? formatUnits((swapQuote as any)[0], decimalsOut) : '';
 
   const { writeContract, isPending, data: txHash } = useWriteContract();
 
@@ -337,28 +352,27 @@ export default function PolPage() {
 
   return (
     <PageLayout>
-      <ChartSection>
-        <ChartHeader>
+      <Container>
+        <PriceCard>
           <TokenInfo>
             <h2>POL / USDC</h2>
             <span>Proof of Luck Token</span>
           </TokenInfo>
           <PriceInfo>
-            <h3>1 POL = 1 USDC</h3>
-            <span>(Pegged)</span>
+            <h3>1 POL = {currentPrice.toFixed(6)} USDC</h3>
+            <span style={{color: currentPrice >= 1 ? '#00cc00' : '#cc0000'}}>
+                {currentPrice >= 1 ? '+' : ''}{((currentPrice - 1) * 100).toFixed(2)}%
+            </span>
           </PriceInfo>
-        </ChartHeader>
-        <MockChart />
-      </ChartSection>
+        </PriceCard>
 
-      <SwapSection>
         <SwapCard>
           <Title>SWAP</Title>
           
           <InputGroup>
             <Label>
               <span>From</span>
-              <Balance>Balance: {balanceIn ? formatUnits(balanceIn.value, decimalsIn) : '0.0'} {isBuying ? 'USDC' : 'POL'}</Balance>
+              <Balance>Balance: {balanceIn ? formatDisplay(formatUnits(balanceIn.value, decimalsIn)) : '0.0'} {isBuying ? 'USDC' : 'POL'}</Balance>
             </Label>
             <InputWrapper>
               <Input 
@@ -382,10 +396,14 @@ export default function PolPage() {
           <InputGroup>
             <Label>
               <span>To</span>
-              <Balance>Balance: {balanceOut ? formatUnits(balanceOut.value, isBuying ? 18 : 6) : '0.0'} {isBuying ? 'POL' : 'USDC'}</Balance>
+              <Balance>Balance: {balanceOut ? formatDisplay(formatUnits(balanceOut.value, decimalsOut)) : '0.0'} {isBuying ? 'POL' : 'USDC'}</Balance>
             </Label>
             <InputWrapper>
-              <Input placeholder="0.0" readOnly value={amountIn} />
+              <Input 
+                placeholder="0.0" 
+                readOnly 
+                value={isQuoting ? 'Calculating...' : formatDisplay(estimatedOut)} 
+              />
               <TokenBadge>{isBuying ? 'POL' : 'USDC'}</TokenBadge>
             </InputWrapper>
           </InputGroup>
@@ -394,7 +412,7 @@ export default function PolPage() {
             {getButtonText()}
           </ActionButton>
         </SwapCard>
-      </SwapSection>
+      </Container>
     </PageLayout>
   );
 }
